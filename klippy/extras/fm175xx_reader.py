@@ -121,6 +121,7 @@ FM175XX_CARD_INFO_CLEAR                 = 1
 # RFID card type
 FM175XX_MIFARE_CARD_TYPE_UNKNOWN        = 0xFF  # unknown type
 FM175XX_MIFARE_CARD_TYPE_M1             = 0x08  # M1
+FM175XX_MIFARE_CARD_TYPE_NTAG           = 0x00  # NTAG215/216 (NFC Forum Type 2)
 
 # About M1 Card
 # EEPROM
@@ -891,6 +892,54 @@ class FM175XXReader:
         ret.out_param = card_data_tmp
         return ret
 
+    # Reader-A: NTAG, read user memory (pages 4+)
+    def __reader_a_ntag_read_user_data(self, max_pages=40) -> Fm175xxReturnVal:
+        ret = Fm175xxReturnVal()
+        user_data = []
+        page = 4  # NTAG user memory starts at page 4
+
+        while page < 4 + max_pages:
+            outbuf = [0] * 2
+            inbuf = [0] * 16
+            cmd = Fm175xxCmdMetaData()
+
+            cmd.send_crc_en = FM175XX_SET
+            cmd.recv_crc_en = FM175XX_SET
+            cmd.send_buff = outbuf
+            cmd.recv_buff = inbuf
+            cmd.send_buff[0] = 0x30  # READ command
+            cmd.send_buff[1] = page
+            cmd.bytes_to_send = 2
+            cmd.bits_to_send = 0
+            cmd.bits_to_recv = 0
+            cmd.bytes_to_recv = 16  # 4 pages * 4 bytes
+            cmd.timeout = 10
+            cmd.cmd = FM175XX_CMD_TRANSCEIVE
+            result = self.__command_exe(cmd)
+
+            if result.err_code != FM175XX_OK:
+                if len(user_data) > 0:
+                    # Partial read is OK -- we may have hit end of memory
+                    break
+                ret.err_code = FM175XX_CARD_READ_ERR
+                return ret
+
+            user_data.extend(result.out_param.recv_buff[0:16])
+
+            # Check for NDEF Terminator TLV (0xFE) in the data just read
+            if 0xFE in result.out_param.recv_buff[0:16]:
+                break
+
+            page += 4  # Advance 4 pages (each READ returns 4 pages)
+
+        if len(user_data) == 0:
+            ret.err_code = FM175XX_CARD_READ_ERR
+            return ret
+
+        ret.err_code = FM175XX_OK
+        ret.out_param = user_data
+        return ret
+
     def __bg_thread(self):
         time.sleep(0.5)
         self.__select_fm175xx_obj(FM175XX_CHANNEL_1)
@@ -983,6 +1032,22 @@ class FM175XXReader:
                                 card_op_result = FM175XX_CARD_READ_ERR
                             else:
                                 card_data = ret.out_param[0:FM175XX_M1_CARD_EEPROM_SIZE]
+                                card_op_result = FM175XX_OK
+
+                                if (self.__self_test_stage != FM175XX_SELF_TEST_STAGE_DOING):
+                                    self.__card_info_read_flag &= ~(1 << ch) & 0xFFFFFFFF
+                                else:
+                                    self.__self_test_success_cnt += 1
+                                    if (self.__card_info_deal_cb != None):
+                                        self.__card_info_deal_cb(ch, card_op, card_op_result, card_type, card_data)
+                        # NTAG215/216 (NFC Forum Type 2 Tag)
+                        elif (FM175XX_MIFARE_CARD_TYPE_NTAG == self.__picc_a.SAK[0]):
+                            card_type = FM175XX_MIFARE_CARD_TYPE_NTAG
+                            ret = self.__reader_a_ntag_read_user_data()
+                            if (FM175XX_OK != ret.err_code):
+                                card_op_result = FM175XX_CARD_READ_ERR
+                            else:
+                                card_data = ret.out_param
                                 card_op_result = FM175XX_OK
 
                                 if (self.__self_test_stage != FM175XX_SELF_TEST_STAGE_DOING):
