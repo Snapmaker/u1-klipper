@@ -82,6 +82,15 @@ FILAMENT_PROTO_COLOR_NUMS_MAX                   = 5
 
 # Filament Tag type
 FILAMENT_PROTO_TAG_M1                           = 'M1_1K'
+FILAMENT_PROTO_TAG_NTAG                         = 'NTAG'
+
+# Material types supported for NTAG NDEF parsing
+# Must match keys in filament_parameters.FILAMENT_PARA_CFG_DEFAULT
+NTAG_SUPPORTED_MATERIAL_TYPES = {
+    'PLA', 'PLA-CF', 'PETG', 'PETG-CF', 'PETG-HF', 'PCTG',
+    'ABS', 'ASA', 'TPU', 'PVA', 'PA', 'PA-CF', 'PA6-CF',
+    'PA-GF', 'PA6-GF', 'PC', 'PC-ABS', 'EVA',
+}
 
 # M1 card protocol
 M1_PROTO_TOTAL_SIZE                             = 1024
@@ -432,6 +441,127 @@ def m1_proto_data_parse(data_buf):
     info['CARD_UID'] = data_buf[M1_PROTO_UID_POS : M1_PROTO_UID_POS + M1_PROTO_UID_LEN]
 
     info['OFFICIAL'] = True
+
+    return FILAMENT_PROTO_OK, info
+
+def ntag_ndef_data_parse(data_buf):
+    """Parse NTAG215/216 user memory containing an NDEF Text Record.
+
+    Expected NDEF text payload format: MATERIAL#RRGGBB
+    Example: PLA#FF5733
+
+    Args:
+        data_buf: list of ints, raw bytes from NTAG page 4 onward
+
+    Returns:
+        (FILAMENT_PROTO_OK, info_dict) on success
+        (FILAMENT_PROTO_ERR, None) on parse failure
+    """
+    if data_buf is None or not isinstance(data_buf, list) or len(data_buf) < 16:
+        return FILAMENT_PROTO_PARAMETER_ERR, None
+
+    try:
+        # Find NDEF Message TLV (type=0x03) in TLV block
+        offset = 0
+        ndef_data = None
+        while offset < len(data_buf) - 1:
+            tlv_type = data_buf[offset]
+            if tlv_type == 0x00:
+                # NULL TLV, skip
+                offset += 1
+                continue
+            if tlv_type == 0xFE:
+                # Terminator TLV
+                break
+            if offset + 1 >= len(data_buf):
+                break
+            tlv_len = data_buf[offset + 1]
+            if tlv_len == 0xFF:
+                # 3-byte length format
+                if offset + 3 >= len(data_buf):
+                    break
+                tlv_len = (data_buf[offset + 2] << 8) | data_buf[offset + 3]
+                tlv_value_start = offset + 4
+            else:
+                tlv_value_start = offset + 2
+
+            if tlv_type == 0x03:
+                # NDEF Message TLV found
+                tlv_value_end = tlv_value_start + tlv_len
+                if tlv_value_end > len(data_buf):
+                    return FILAMENT_PROTO_ERR, None
+                ndef_data = data_buf[tlv_value_start:tlv_value_end]
+                break
+
+            # Skip unknown TLV
+            offset = tlv_value_start + tlv_len
+
+        if ndef_data is None or len(ndef_data) < 3:
+            return FILAMENT_PROTO_ERR, None
+
+        # Parse NDEF Record header
+        header = ndef_data[0]
+        tnf = header & 0x07
+        type_len = ndef_data[1]
+        # Short Record (SR) bit check
+        if header & 0x10:
+            payload_len = ndef_data[2]
+            rec_type_start = 3
+        else:
+            if len(ndef_data) < 6:
+                return FILAMENT_PROTO_ERR, None
+            payload_len = ((ndef_data[2] << 24) | (ndef_data[3] << 16) |
+                           (ndef_data[4] << 8) | ndef_data[5])
+            rec_type_start = 6
+
+        rec_type = ndef_data[rec_type_start:rec_type_start + type_len]
+        payload_start = rec_type_start + type_len
+        payload = ndef_data[payload_start:payload_start + payload_len]
+
+        # Verify: TNF=0x01 (NFC Forum well-known type), Type="T" (Text)
+        if tnf != 0x01 or rec_type != [ord('T')]:
+            return FILAMENT_PROTO_ERR, None
+
+        if len(payload) < 1:
+            return FILAMENT_PROTO_ERR, None
+
+        # Text Record: first byte = status (bit 7=encoding, bits 5-0=lang code len)
+        lang_code_len = payload[0] & 0x3F
+        text_start = 1 + lang_code_len
+        if text_start >= len(payload):
+            return FILAMENT_PROTO_ERR, None
+
+        text_bytes = payload[text_start:]
+        text = bytes(text_bytes).decode('utf-8').strip()
+
+        # Parse MATERIAL#RRGGBB
+        if '#' not in text:
+            return FILAMENT_PROTO_ERR, None
+
+        parts = text.split('#', 1)
+        material_type = parts[0].upper().strip()
+        color_hex = parts[1].strip()
+
+        if material_type not in NTAG_SUPPORTED_MATERIAL_TYPES:
+            return FILAMENT_PROTO_ERR, None
+
+        if len(color_hex) != 6:
+            return FILAMENT_PROTO_ERR, None
+
+        rgb_value = int(color_hex, 16)
+
+    except (IndexError, ValueError, UnicodeDecodeError):
+        return FILAMENT_PROTO_ERR, None
+
+    info = copy.copy(FILAMENT_INFO_STRUCT)
+    info['VENDOR'] = 'Generic'
+    info['MAIN_TYPE'] = material_type
+    info['SUB_TYPE'] = 'Basic'
+    info['COLOR_NUMS'] = 1
+    info['ALPHA'] = 0xFF
+    info['RGB_1'] = rgb_value
+    info['ARGB_COLOR'] = 0xFF000000 | rgb_value
+    info['OFFICIAL'] = False
 
     return FILAMENT_PROTO_OK, info
 
