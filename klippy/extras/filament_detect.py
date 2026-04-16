@@ -124,6 +124,14 @@ class FilamentDetector:
                     filament_info = info
                 else:
                     logging.error("channel[%d] m1 parse err: %d", channel, error)
+            elif (fm175xx_reader.FM175XX_MIFARE_CARD_TYPE_NTAG == card_type and fm175xx_reader.FM175XX_OK == result):
+                logging.info("channel[%d] ntag card data parsing....", channel)
+                error, info = filament_protocol.ntag_ndef_data_parse(card_data)
+                if (error == filament_protocol.FILAMENT_PROTO_OK):
+                    logging.info("channel[%d] ntag parse ok....", channel)
+                    filament_info = info
+                else:
+                    logging.error("channel[%d] ntag parse err: %d", channel, error)
         else:
             is_clear = True
 
