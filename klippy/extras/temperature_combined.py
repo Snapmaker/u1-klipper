@@ -116,6 +116,12 @@ class PrinterSensorCombined:
         # set next update time
         return measured_time + REPORT_TIME
 
+    def set_read_tolerance(self, read_time_tol, min_update_ratio):
+        # Add no-op so that temperature combined can be used with multiple temperature sensors
+        # This is ok to add, since the class does not communicate with MCUs, but instead combines
+        # multiple temperature sensors values to become one value.
+        pass
+
 
 def mean(values):
     if not values:
