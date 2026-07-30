@@ -226,8 +226,8 @@ STEPCOMPRESS_FLUSH_TIME = 0.050
 SDS_CHECK_TIME = 0.001 # step+dir+step filter in stepcompress.c
 MOVE_HISTORY_EXPIRE = 30.
 
-DRIP_SEGMENT_TIME = 0.100
-DRIP_TIME = 0.350
+DRIP_SEGMENT_TIME = 0.050
+DRIP_TIME = 0.100
 class DripModeEndSignal(Exception):
     pass
 
