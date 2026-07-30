@@ -1090,7 +1090,7 @@ class VirtualSD:
                 'current_object': current_object
             }
             self.pl_next_save_line += self.pl_save_line_interval
-            self.save_environment_data(file_path, data, sync, flush, safe_write)
+            self.save_environment_data(file_path, data, sync, flush, safe_write, replace=True)
             self.current_file_index = (self.current_file_index + 1) % self.max_file_count
 
     def parse_power_loss_move_env(self, validate_only=False):
@@ -1317,10 +1317,12 @@ class VirtualSD:
         return {}
 
     def save_environment_data(self, file_path, data_dict={}, sync=False,
-                              flush=True, safe_write=True):
+                              flush=True, safe_write=True, replace=False):
         if not data_dict:
             return True
-        if file_path in self._pl_cache:
+        if replace:
+            existing_data = dict(data_dict)
+        elif file_path in self._pl_cache:
             existing_data = self._pl_cache[file_path]
             existing_data.update(data_dict)
         else:

@@ -286,7 +286,9 @@ class HomingXYZOverride:
             probe.cmd_helper.cmd_PROBE(probe_gcmd)
             toolhead.wait_moves()
             thcoord = list(toolhead.get_position())
-            thcoord[2] = self.start_z_pos + z_probe_offset
+            z_overshoot_comp = thcoord[2] - probe.get_status(0)['last_z_result']
+            gcmd.respond_info("z_overshoot_comp: {}".format(z_overshoot_comp))
+            thcoord[2] = self.start_z_pos + z_probe_offset + z_overshoot_comp
             bed_mesh = self.printer.lookup_object('bed_mesh', None)
             if bed_mesh is not None and bed_mesh.get_mesh() is not None:
                 toolhead.set_position(thcoord, homing_axes=[2])

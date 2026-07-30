@@ -968,7 +968,7 @@ class FilamentFeed:
                         self.exception_code[ch] = 33
                         raise ValueError('logic error!')
 
-                    self.gcode.run_script_from_command("M104 S%d\r\n" % (filament_feed_temp - 70))
+                    self.gcode.run_script_from_command("M104 S%d T%d A0\r\n" % (filament_feed_temp - 70, self.filament_ch[ch]))
 
                     # home
                     try:
@@ -1734,6 +1734,9 @@ class FilamentFeed:
         filament_entangle_detect = self.printer.lookup_object(
                 f'filament_entangle_detect e{self.filament_ch[channel]}_filament', None)
         machine_state_manager = self.printer.lookup_object('machine_state_manager', None)
+        extruder_obj = self.printer.lookup_object("extruder", None)
+        if self.filament_ch[channel] != 0:
+            extruder_obj = self.printer.lookup_object(f"extruder{self.filament_ch[channel]}", None)
         if machine_state_manager is not None:
             machine_sta = machine_state_manager.get_status()
             if str(machine_sta["main_state"]) not in ["IDLE", "PRINTING", "AUTO_LOAD", "AUTO_UNLOAD" ]:
@@ -1774,10 +1777,15 @@ class FilamentFeed:
             if self.runout_sensor[channel] is None or self.runout_sensor[channel].get_status(0)['enabled'] == False:
                 return
 
+            last_temp = 0
+            need_restore_temp = False
+            if extruder_obj is not None:
+                last_temp = extruder_obj.heater.target_temp
             try:
                 if machine_state_manager is not None:
                     machine_sta = machine_state_manager.get_status()
                     if str(machine_sta["main_state"]) == "PRINTING":
+                        need_restore_temp = True
                         if str(machine_sta["action_code"]) != "PRINT_RESUMING" and str(machine_sta["action_code"]) != "PRINT_REPLENISHING":
                             self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=PRINT_AUTO_FEEDING")
                     else:
@@ -1792,6 +1800,8 @@ class FilamentFeed:
                 if self._is_keep_raw_error_info(self.channel_error[channel]):
                     raise
             finally:
+                if need_restore_temp == True:
+                    self.gcode.run_script_from_command(f"M104 S{last_temp} T{self.filament_ch[channel]} A0")
                 if filament_entangle_detect is not None:
                     filament_entangle_detect.skip_entangle_check(False)
                 if machine_state_manager is not None:
@@ -1823,12 +1833,17 @@ class FilamentFeed:
             return
 
         if need_to_unload == True:
+            last_temp = 0
+            need_restore_temp = False
+            if extruder_obj is not None:
+                last_temp = extruder_obj.heater.target_temp
             try:
                 if filament_entangle_detect is not None:
                     filament_entangle_detect.skip_entangle_check(True)
                 if machine_state_manager is not None:
                     machine_sta = machine_state_manager.get_status()
                     if str(machine_sta["main_state"]) == "PRINTING":
+                        need_restore_temp = True
                         self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=PRINT_AUTO_UNLOADING")
                     else:
                         self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=AUTO_UNLOAD ACTION=AUTO_UNLOADING")
@@ -1854,6 +1869,8 @@ class FilamentFeed:
                         else:
                             self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=IDLE ACTION=IDLE")
             finally:
+                if need_restore_temp == True:
+                    self.gcode.run_script_from_command(f"M104 S{last_temp} T{self.filament_ch[channel]} A0")
                 if filament_entangle_detect is not None:
                     filament_entangle_detect.skip_entangle_check(False)
 
@@ -1894,11 +1911,19 @@ class FilamentFeed:
         filament_entangle_detect = self.printer.lookup_object(
                 f'filament_entangle_detect e{self.filament_ch[channel]}_filament', None)
         machine_state_manager = self.printer.lookup_object('machine_state_manager', None)
+        extruder_obj = self.printer.lookup_object("extruder", None)
+        if self.filament_ch[channel] != 0:
+            extruder_obj = self.printer.lookup_object(f"extruder{self.filament_ch[channel]}", None)
         if machine_state_manager is not None:
             machine_sta = machine_state_manager.get_status()
             if str(machine_sta["main_state"]) not in ["IDLE", "PRINTING", "MANUAL_LOAD"]:
                 raise gcmd.error('[feed][manual] channel[%d] machine main state error: %s\n'
                                  % (channel, str(machine_sta["main_state"])))
+
+        last_temp = 0
+        need_restore_temp = False
+        if extruder_obj is not None:
+            last_temp = extruder_obj.heater.target_temp
 
         try:
             if filament_entangle_detect is not None:
@@ -1907,6 +1932,8 @@ class FilamentFeed:
                 machine_sta = machine_state_manager.get_status()
                 if str(machine_sta["main_state"]) != "PRINTING":
                     self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=MANUAL_LOAD ACTION=MANUAL_LOADING")
+                else:
+                    need_restore_temp = True
             self._do_feed(channel, FEED_ACT_MANUAL_FEED, stage)
         except Exception as e:
             if machine_state_manager is not None:
@@ -1925,6 +1952,8 @@ class FilamentFeed:
                     if str(machine_sta["main_state"]) != "PRINTING":
                         self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=IDLE ACTION=IDLE")
         finally:
+            if need_restore_temp == True:
+                self.gcode.run_script_from_command(f"M104 S{last_temp} T{self.filament_ch[channel]} A0")
             if filament_entangle_detect is not None:
                 filament_entangle_detect.skip_entangle_check(False)
 

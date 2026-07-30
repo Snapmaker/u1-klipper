@@ -1270,12 +1270,13 @@ class PrintTaskConfig:
                     tmp_print_task_config['extruders_used'][tmp_print_task_config['extruder_map_table'][i]] = True
 
             # check nozzle diameter
-            for i in range(PHYSICAL_EXTRUDER_NUM):
-                if tmp_print_task_config['extruders_used'][i]:
-                    if abs(tmp_print_task_config_2['nozzle_diameter'][0] - actual_nozzle_diameter[i]) > 0.001:
-                        exception_code = 14
-                        raise gcmd.error(f"[print_task_config] nozzle diameter mismatch:" +
-                                            f"f_{tmp_print_task_config_2['nozzle_diameter'][0]} != e_{actual_nozzle_diameter[i]}")
+            if nozzle_diameter is not None:
+                for i in range(PHYSICAL_EXTRUDER_NUM):
+                    if tmp_print_task_config['extruders_used'][i]:
+                        if abs(tmp_print_task_config_2['nozzle_diameter'][0] - actual_nozzle_diameter[i]) > 0.001:
+                            exception_code = 14
+                            raise gcmd.error(f"[print_task_config] nozzle diameter mismatch:" +
+                                                f"f_{tmp_print_task_config_2['nozzle_diameter'][0]} != e_{actual_nozzle_diameter[i]}")
 
             # check flow calibration
             if tmp_print_task_config['flow_calibrate']:
