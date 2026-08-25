@@ -1393,27 +1393,37 @@ class ExtruderOffsetCalibration:
     def _get_filament_temp(self, extruder):
         print_task_config = self.printer.lookup_object('print_task_config', None)
         filament_parameters = self.printer.lookup_object('filament_parameters', None)
-        if print_task_config is None or filament_parameters is None:
+        extruder_obj = self.printer.lookup_object(f'extruder', None)
+        if extruder is not None and extruder != 0:
+            extruder_obj = self.printer.lookup_object(f'extruder{extruder}', None)
+        if print_task_config is None or filament_parameters is None or extruder_obj is None:
             return 200
 
         status = print_task_config.get_status()
-        temp = filament_parameters.get_flow_temp(
+        temp = filament_parameters.get_print_temp(
                 status['filament_vendor'][extruder],
                 status['filament_type'][extruder],
-                status['filament_sub_type'][extruder])
+                status['filament_sub_type'][extruder],
+                extruder_obj.nozzle_diameter,
+                extruder_obj.nozzle_volume_type)
         return temp - 20
 
     def _get_filament_soft(self, extruder):
         print_task_config = self.printer.lookup_object('print_task_config', None)
         filament_parameters = self.printer.lookup_object('filament_parameters', None)
-        if print_task_config is None or filament_parameters is None:
+        extruder_obj = self.printer.lookup_object(f'extruder', None)
+        if extruder != 0:
+            extruder_obj = self.printer.lookup_object(f'extruder{extruder}', None)
+        if print_task_config is None or filament_parameters is None or extruder_obj is None:
             return False
 
         status = print_task_config.get_status()
         return filament_parameters.get_is_soft(
                 status['filament_vendor'][extruder],
                 status['filament_type'][extruder],
-                status['filament_sub_type'][extruder])
+                status['filament_sub_type'][extruder],
+                extruder_obj.nozzle_diameter,
+                extruder_obj.nozzle_volume_type)
 
     def cmd_EXTRUDER_OFFSET_ACTION_GET_STATUS(self, gcmd):
         gcmd.respond_info("{}".format(self.get_status(0)))

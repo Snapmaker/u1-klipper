@@ -53,6 +53,7 @@ class FilamentEntangleDetect:
         self.config = self.printer.load_snapmaker_config_file(self.config_path,
                                                               DEFAULT_CONFIG,
                                                               create_if_not_exist=True)
+        self._is_factory_mode = os.path.exists('/oem/.factory')
 
         self.gcode.register_mux_command(
             "SET_FILAMENT_ENTANGLE_DETECT_FACTOR", "SENSOR", self.name,
@@ -209,16 +210,24 @@ class FilamentEntangleDetect:
         if delta_position >= (self.detection_length * self.config['detect_factor'] * global_detect_sen):
             dest_delta_count = int(delta_position / (self.detection_length * self.config['detect_factor'] * global_detect_sen))
             is_tangled = False
-            if check_wheel_counts == True and check_wheel_2_counts == True:
-                if delta_count < dest_delta_count and delta_count_2 < dest_delta_count:
-                    is_tangled = True
-            else:
+            if self._is_factory_mode:
                 if check_wheel_counts == True:
                     if delta_count < dest_delta_count:
                         is_tangled = True
                 if check_wheel_2_counts == True:
                     if delta_count_2 < dest_delta_count:
                         is_tangled = True
+            else:
+                if check_wheel_counts == True and check_wheel_2_counts == True:
+                    if delta_count < dest_delta_count and delta_count_2 < dest_delta_count:
+                        is_tangled = True
+                else:
+                    if check_wheel_counts == True:
+                        if delta_count < dest_delta_count:
+                            is_tangled = True
+                    if check_wheel_2_counts == True:
+                        if delta_count_2 < dest_delta_count:
+                            is_tangled = True
 
             if is_tangled:
                 self.printer.send_event("print_stats:update_exception_info",

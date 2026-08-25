@@ -125,13 +125,11 @@ class ExceptionManager:
         return True
 
     def _load_persistent_exceptions(self):
-        if not os.path.exists(self.exception_file_path):
+        raw_data = self._read_exception_file()
+        if not raw_data:
             return {}
 
         try:
-            with open(self.exception_file_path, 'r') as f:
-                raw_data = json.load(f)
-
             valid_data = {}
             invalid_entries = []
 
@@ -160,6 +158,31 @@ class ExceptionManager:
 
             return valid_data
 
+        except Exception as e:
+            logging.error(f"Error loading persistent exceptions: {str(e)}")
+            return {}
+
+    def _read_exception_file(self):
+        """Read the persistent exception file. Uses the async read thread when
+        the reactor is running (non-blocking), else synchronous (startup)."""
+        if getattr(self.reactor, '_g_dispatch', None) is not None:
+            try:
+                from asyncfilereader import get_async_file_io
+                reader = get_async_file_io()
+                req = reader.submit_read(self.exception_file_path, parse_json=True)
+                result = reader.wait(req, self.reactor)
+                return result if isinstance(result, dict) else {}
+            except FileNotFoundError:
+                return {}
+            except Exception:
+                logging.exception("Error loading persistent exceptions")
+                return {}
+        if not os.path.exists(self.exception_file_path):
+            return {}
+        try:
+            with open(self.exception_file_path, 'r') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
         except Exception as e:
             logging.error(f"Error loading persistent exceptions: {str(e)}")
             return {}
@@ -203,8 +226,6 @@ class ExceptionManager:
             return False
 
     def remove_persistent_exceptions(self):
-        if not os.path.exists(self.exception_file_path):
-            return False
         try:
             queuefile.async_delete_file(self.exception_file_path)
             return True

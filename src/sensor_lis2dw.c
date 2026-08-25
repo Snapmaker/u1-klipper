@@ -70,7 +70,7 @@ lis2dw_query(struct lis2dw *ax, uint8_t oid)
 {
     uint8_t msg[7] = {0};
     uint8_t fifo[2] = {LIS_FIFO_SAMPLES| LIS_AM_READ , 0};
-    uint8_t fifo_empty,fifo_ovrn = 0;
+    uint8_t fifo_count,fifo_ovrn = 0;
 
     msg[0] = LIS_AR_DATAX0 | LIS_AM_READ ;
     uint8_t *d = &ax->sb.data[ax->sb.data_count];
@@ -78,7 +78,7 @@ lis2dw_query(struct lis2dw *ax, uint8_t oid)
     spidev_transfer(ax->spi, 1, sizeof(msg), msg);
 
     spidev_transfer(ax->spi, 1, sizeof(fifo), fifo);
-    fifo_empty = fifo[1]&0x3F;
+    fifo_count = fifo[1]&0x3F;
     fifo_ovrn = fifo[1]&0x40;
 
     d[0] = msg[1]; // x low bits
@@ -97,7 +97,7 @@ lis2dw_query(struct lis2dw *ax, uint8_t oid)
         ax->sb.possible_overflows++;
 
     // check if we need to run the task again (more packets in fifo?)
-    if (!fifo_empty) {
+    if (fifo_count) {
         // More data in fifo - wake this task again
         sched_wake_task(&lis2dw_wake);
     } else {

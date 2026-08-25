@@ -28,8 +28,11 @@ EXTRUDER_SWITCH_RECORDER = "extruder_switch_recorder.json"
 
 NOZZLE_CONFIG_POSTFIX = "_nozzle_config.json"
 VALID_NOZZLE_DIAMETERS = [0.2, 0.4, 0.6, 0.8]
+VALID_NOZZLE_VOLUME_TYPES = ['standard', 'high_flow']
 NOZZLE_CONFIG_DEFAULT = {
     "diameter": 0.4,
+    "diameter_v160": 0.4,
+    "volume_type": "standard",
 }
 
 class ExtruderSwitchRecorder:
@@ -424,7 +427,20 @@ class PrinterExtruder:
         nozzle_config_dir = self.printer.get_snapmaker_config_dir("persistent")
         self.nozzle_config_path = os.path.join(nozzle_config_dir, nozzle_config_name)
         self.nozzle_config_info = self.printer.load_snapmaker_config_file(self.nozzle_config_path, NOZZLE_CONFIG_DEFAULT)
+        need_save = False
+        if self.nozzle_config_info['diameter'] != self.nozzle_config_info['diameter_v160']:
+            self.nozzle_config_info['diameter_v160'] = self.nozzle_config_info['diameter']
+            self.nozzle_config_info['volume_type'] = NOZZLE_CONFIG_DEFAULT['volume_type']
+            need_save = True
+        if 'version' not in self.nozzle_config_info:
+            self.nozzle_config_info.update({'version': self.printer.get_start_args().get('software_version')})
+            need_save = True
+
+        if need_save:
+            if not self.printer.update_snapmaker_config_file(self.nozzle_config_path, self.nozzle_config_info):
+                logging.error("failed to sync nozzle config after lower version change")
         self.nozzle_diameter = self.nozzle_config_info['diameter']
+        self.nozzle_volume_type = self.nozzle_config_info['volume_type']
 
         # Setup hotend heater
         pheaters = self.printer.load_object(config, 'heaters')
@@ -581,12 +597,14 @@ class PrinterExtruder:
             self.gcode_offset = [0, 0, 0]
             gcode.register_command("M104", self.cmd_M104)
             gcode.register_command("M109", self.cmd_M109)
+            gcode.register_command("INNER_HEAT_TO_LOADED_FILAMENT_TEMP", self.cmd_INNER_HEAT_TO_LOADED_FILAMENT_TEMP)
             gcode.register_command("SET_MAX_E_ACCEL", self.cmd_SET_MAX_E_ACCEL)
             gcode.register_command("SET_MAX_E_VELOCITY", self.cmd_SET_MAX_E_VELOCITY)
             gcode.register_command("ENTER_PARK_POINT_MANUAL_CALIBRATION", self.cmd_ENTER_PARK_POINT_MANUAL_CALIBRATION)
             gcode.register_command("EXIT_PARK_POINT_MANUAL_CALIBRATION", self.cmd_EXIT_PARK_POINT_MANUAL_CALIBRATION)
             wh.register_endpoint("control/extruder_temp", self._handle_control_extruder_temp)
             wh.register_endpoint("control/nozzle_diameter", self._handle_control_nozzle_diameter)
+            wh.register_endpoint("control/nozzle_properties", self._handle_control_nozzle_properties)
             if self.park_detector is not None:
                 gcode.register_command("GET_EXTRUDER_ACTIVATE_INFO", self.cmd_GET_EXTRUDER_ACTIVATE_INFO)
             self.printer.register_event_handler('print_stats:stop', self._handle_stop_print_job)
@@ -607,6 +625,8 @@ class PrinterExtruder:
                                    self.name, self.cmd_VERIFY_PARK_POSITION)
         gcode.register_mux_command("SET_NOZZLE_DIAMETER", "EXTRUDER",
                             self.name, self.cmd_SET_NOZZLE_DIAMETER)
+        gcode.register_mux_command("SET_NOZZLE_PROPERTIES", "EXTRUDER",
+                            self.name, self.cmd_SET_NOZZLE_PROPERTIES)
         self.gcode = gcode
     def _handle_connect(self):
         self.update_extruder_gcode_offset()
@@ -711,6 +731,7 @@ class PrinterExtruder:
         sts['can_extrude'] = bool(self.heater.can_extrude)
         sts['extruder_index'] = self.extruder_index
         sts['nozzle_diameter'] = self.nozzle_diameter
+        sts['nozzle_volume_type'] = self.nozzle_volume_type
         sts['printing_e_pos'] = self.printing_e_pos
         sts['activating_move'] = self.activating_move
         if self.park_detector is not None:
@@ -1127,40 +1148,121 @@ class PrinterExtruder:
             logging.error(f'failed to set extruder temp: {str(e)}')
             web_request.send({'state': 'error', 'message': str(e)})
 
-    def _set_nozzle_diameter(self, diameter):
+    def _set_nozzle_diameter(self, diameter, save=True):
         self.nozzle_diameter = diameter
         self.nozzle_config_info['diameter'] = diameter
-        if not self.printer.update_snapmaker_config_file(self.nozzle_config_path, self.nozzle_config_info):
-            logging.error("failed to save nozzle diameter config")
+        self.nozzle_config_info['diameter_v160'] = diameter
+        if save:
+            if not self.printer.update_snapmaker_config_file(self.nozzle_config_path, self.nozzle_config_info):
+                logging.error("failed to save nozzle diameter config")
+        if diameter >= 0.1999 and diameter <= 0.2001:
+            print_task_config = self.printer.lookup_object('print_task_config', None)
+            filament_parameters = self.printer.lookup_object('filament_parameters', None)
+            if print_task_config is not None and filament_parameters is not None:
+                status = print_task_config.get_status()
+                is_allow = filament_parameters.is_allow_to_print(
+                        status['filament_vendor'][self.extruder_index],
+                        status['filament_type'][self.extruder_index],
+                        status['filament_sub_type'][self.extruder_index],
+                        self.nozzle_diameter,
+                        self.nozzle_volume_type)
+                if not is_allow:
+                    print_task_config.reset_filament_info(self.extruder_index)
+
+    def _set_nozzle_volume_type(self, volume_type, save=True):
+        self.nozzle_volume_type = volume_type
+        self.nozzle_config_info['volume_type'] = volume_type
+        if save:
+            if not self.printer.update_snapmaker_config_file(self.nozzle_config_path, self.nozzle_config_info):
+                logging.error("failed to save nozzle volume type config")
 
     def _handle_control_nozzle_diameter(self, web_request):
         try:
             extruder_index = web_request.get_int('extruder', None)
-            nozzle_diameter = web_request.get_float('diameter', self.nozzle_diameter)
-
-            print_stats = self.printer.lookup_object('print_stats', None)
-            if print_stats is not None and print_stats.state in ['printing', 'paused']:
-                raise ValueError("Cannot change nozzle diameter during printing!")
+            nozzle_diameter = web_request.get_float('diameter', None)
 
             if extruder_index is None:
                 raise ValueError("extruder must be specified!")
-
-            if nozzle_diameter not in VALID_NOZZLE_DIAMETERS:
-                raise ValueError(f"nozzle_diameter error: {nozzle_diameter}")
-
             extruder_obj = self.printer.lookup_object('extruder', None)
             if extruder_index != 0:
                 extruder_obj = self.printer.lookup_object(f'extruder{extruder_index}', None)
             if extruder_obj is None:
                 raise ValueError("extruder not found!")
 
-            if nozzle_diameter != extruder_obj.nozzle_diameter:
-                extruder_obj._set_nozzle_diameter(nozzle_diameter)
+            if nozzle_diameter is None:
+                raise ValueError("diameter must be specified!")
+            if nozzle_diameter not in VALID_NOZZLE_DIAMETERS:
+                raise ValueError(f"nozzle_diameter error: {nozzle_diameter}")
+
+            print_stats = self.printer.lookup_object('print_stats', None)
+            if print_stats is not None and print_stats.state in ['printing', 'paused']:
+                raise ValueError("Cannot change nozzle diameter during printing!")
+
+            extruder_obj.nozzle_config_info['version'] = self.printer.get_start_args().get('software_version')
+            extruder_obj._set_nozzle_diameter(nozzle_diameter)
 
             web_request.send({'state': 'success'})
 
         except Exception as e:
             web_request.send({'state': 'error', 'message': str(e)})
+
+    def _handle_control_nozzle_properties(self, web_request):
+        try:
+            logging.info(f"[extruder] wb, control_nozzle_properties: {web_request.get_raw_parameters()}")
+
+            extruder_index = web_request.get_int('extruder', None)
+            nozzle_diameter = web_request.get_float('diameter', None)
+            nozzle_volume_type = web_request.get('volume_type', None)
+
+            if extruder_index is None:
+                raise ValueError("extruder must be specified!")
+            extruder_obj = self.printer.lookup_object('extruder', None)
+            if extruder_index != 0:
+                extruder_obj = self.printer.lookup_object(f'extruder{extruder_index}', None)
+            if extruder_obj is None:
+                raise ValueError("extruder not found!")
+
+            print_stats = self.printer.lookup_object('print_stats', None)
+            if print_stats is not None and print_stats.state in ['printing', 'paused']:
+                raise ValueError("Cannot change nozzle properties during printing!")
+
+            if nozzle_diameter is not None:
+                if nozzle_diameter not in VALID_NOZZLE_DIAMETERS:
+                    raise ValueError(f"nozzle_diameter error: {nozzle_diameter}")
+                extruder_obj._set_nozzle_diameter(nozzle_diameter, save=False)
+
+            if nozzle_volume_type is not None:
+                if nozzle_volume_type not in VALID_NOZZLE_VOLUME_TYPES:
+                    raise ValueError(f"nozzle_volume_type error: {nozzle_volume_type}")
+                extruder_obj._set_nozzle_volume_type(nozzle_volume_type, save=False)
+
+            extruder_obj.nozzle_config_info['version'] = self.printer.get_start_args().get('software_version')
+
+            if not extruder_obj.printer.update_snapmaker_config_file(extruder_obj.nozzle_config_path, extruder_obj.nozzle_config_info):
+                logging.error("failed to save nozzle properties")
+
+            web_request.send({'state': 'success'})
+        except Exception as e:
+            web_request.send({'state': 'error', 'message': str(e)})
+
+    def _get_filament_temp(self, extruder_index=None):
+        print_task_config = self.printer.lookup_object('print_task_config', None)
+        filament_parameters = self.printer.lookup_object('filament_parameters', None)
+        if extruder_index is None:
+            extruder_index = self.extruder_index
+        extruder_obj = self.printer.lookup_object('extruder', None)
+        if extruder_index != 0:
+            extruder_obj = self.printer.lookup_object(f'extruder{extruder_index}', None)
+        if print_task_config is None or filament_parameters is None or extruder_obj is None:
+            return 220
+
+        status = print_task_config.get_status()
+        return filament_parameters.get_print_temp(
+                status['filament_vendor'][extruder_index],
+                status['filament_type'][extruder_index],
+                status['filament_sub_type'][extruder_index],
+                extruder_obj.nozzle_diameter,
+                extruder_obj.nozzle_volume_type)
 
     def cmd_M104(self, gcmd, wait=False):
         # Set Extruder Temperature
@@ -1174,6 +1276,18 @@ class PrinterExtruder:
     def cmd_M109(self, gcmd):
         # Set Extruder Temperature and Wait
         self.cmd_M104(gcmd, wait=True)
+    def cmd_INNER_HEAT_TO_LOADED_FILAMENT_TEMP(self, gcmd):
+        index = gcmd.get_int('T', None, minval=0)
+        temp = gcmd.get_float('S', self._get_filament_temp(index))
+        extruder_map = gcmd.get_int('A', 1, minval=0)
+        wait = gcmd.get_int('WAIT', 0, minval=0)
+        delta = gcmd.get_float('DELTA', 0.)
+        temp += delta
+        try:
+            self._set_extruder_temp(temp, index, extruder_map, wait)
+        except Exception as e:
+            raise gcmd.error(str(e))
+
     cmd_ACTIVATE_EXTRUDER_help = "Change the active extruder"
     def cmd_ACTIVATE_EXTRUDER(self, gcmd):
         toolhead = self.printer.lookup_object('toolhead')
@@ -2034,7 +2148,35 @@ class PrinterExtruder:
         if print_stats is not None and print_stats.state in ['printing', 'paused']:
             raise gcmd.error("Cannot change nozzle diameter during printing!")
 
-        self._set_nozzle_diameter(diameter)
+        self._set_nozzle_diameter(diameter, False)
+        self.nozzle_config_info.update({'version': self.printer.get_start_args().get('software_version')})
+        if not self.printer.update_snapmaker_config_file(self.nozzle_config_path, self.nozzle_config_info):
+            logging.error("failed to save nozzle properties")
+
+    def cmd_SET_NOZZLE_PROPERTIES(self, gcmd):
+        logging.info("[extruder] SET_NOZZLE_PROPERTIES %s", gcmd.get_raw_command_parameters())
+
+        diameter = gcmd.get_float('DIAMETER', None)
+        volume_type = gcmd.get('VOLUME_TYPE', None)
+
+        if diameter is not None and diameter not in VALID_NOZZLE_DIAMETERS:
+            raise gcmd.error("Invalid nozzle diameter")
+
+        if volume_type is not None and volume_type not in VALID_NOZZLE_VOLUME_TYPES:
+            raise gcmd.error("Invalid nozzle volume type")
+
+        print_stats = self.printer.lookup_object('print_stats', None)
+        if print_stats is not None and print_stats.state in ['printing', 'paused']:
+            raise gcmd.error("Cannot change nozzle diameter during printing!")
+
+        if diameter is not None:
+            self._set_nozzle_diameter(diameter, False)
+        if volume_type is not None:
+            self._set_nozzle_volume_type(volume_type, False)
+
+        self.nozzle_config_info.update({'version': self.printer.get_start_args().get('software_version')})
+        if not self.printer.update_snapmaker_config_file(self.nozzle_config_path, self.nozzle_config_info):
+            logging.error("failed to save nozzle properties")
 
 # Dummy extruder class used when a printer has no extruder at all
 class DummyExtruder:

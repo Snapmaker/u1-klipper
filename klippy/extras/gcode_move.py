@@ -323,10 +323,13 @@ class GCodeMove:
             speed = gcmd.get_float('MOVE_SPEED', self.speed, above=0.)
             accel = gcmd.get_float('MOVE_ACCEL', state['accel'], above=0.)
             extrude = gcmd.get_float('EXTRUDE', 0., minval=0., maxval=20.)
+            xy_first = gcmd.get_int('XY_FIRST', 0)
             toolhead.max_accel = accel
             toolhead._calc_junction_deviation()
             self.last_position[0] = state['last_position'][0] - state['base_position'][0] + self.base_position[0]
             self.last_position[1] = state['last_position'][1] - state['base_position'][1] + self.base_position[1]
+            if xy_first:
+                self.move_with_transform(self.last_position, speed)
             self.last_position[2] = state['last_position'][2] - state['base_position'][2] + self.base_position[2]
             self.move_with_transform(self.last_position, speed)
             self.last_position[3] += extrude

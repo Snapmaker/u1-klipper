@@ -122,9 +122,10 @@ class PauseResume:
         move = gcmd.get_int('MOVE', 1 , minval=0, maxval=1)
         accel = gcmd.get_float('MOVE_ACCEL', 5000.)
         extrude = gcmd.get_float('EXTRUDE', 0., minval=0., maxval=20.)
+        xy_first = gcmd.get_int('XY_FIRST', 0)
         self.gcode.run_script_from_command(
-            "RESTORE_GCODE_STATE NAME=PAUSE_STATE MOVE=%d MOVE_SPEED=%.4f MOVE_ACCEL=%.4f EXTRUDE=%.4f"
-            % (move, velocity, accel, extrude))
+            "RESTORE_GCODE_STATE NAME=PAUSE_STATE MOVE=%d MOVE_SPEED=%.4f MOVE_ACCEL=%.4f EXTRUDE=%.4f XY_FIRST=%d"
+            % (move, velocity, accel, extrude, xy_first))
         self.send_resume_command()
         self.is_paused = False
     cmd_RESUME_help = ("Resumes the print from a pause")

@@ -75,12 +75,12 @@ class ShaperCalibrate:
         import queuelogger
         parent_conn, child_conn = multiprocessing.Pipe()
         def wrapper():
-            queuelogger.clear_bg_logging()
-            minor_core = self.printer.get_start_args().get('minor_core')
-            if minor_core:
-                os.sched_setaffinity(0, minor_core)
-            os.setpriority(os.PRIO_PROCESS, 0, 0)
             try:
+                queuelogger.clear_bg_logging()
+                minor_core = self.printer.get_start_args().get('minor_core')
+                if minor_core:
+                    os.sched_setaffinity(0, minor_core)
+                os.setpriority(os.PRIO_PROCESS, 0, 0)
                 res = method(*args)
             except:
                 child_conn.send((True, traceback.format_exc()))
@@ -91,23 +91,65 @@ class ShaperCalibrate:
         # Start a process to perform the calculation
         calc_proc = multiprocessing.Process(target=wrapper)
         calc_proc.daemon = True
-        calc_proc.start()
+        try:
+            calc_proc.start()
+        except Exception as e:
+            child_conn.close()
+            parent_conn.close()
+            logging.exception("Error starting calculation process: %s: %s"
+                              % (type(e).__name__, e))
+            raise self.error("Error starting calculation process: %s: %s"
+                             % (type(e).__name__, e))
+
+        child_conn.close()
         # Wait for the process to finish
         reactor = self.printer.get_reactor()
         gcode = self.printer.lookup_object("gcode")
         eventtime = last_report_time = reactor.monotonic()
-        while calc_proc.is_alive():
-            if eventtime > last_report_time + 5.:
-                last_report_time = eventtime
-                gcode.respond_info("Wait for calculations..", log=False)
-            eventtime = reactor.pause(eventtime + .1)
-        # Return results
-        is_err, res = parent_conn.recv()
-        if is_err:
-            raise self.error("Error in remote calculation: %s" % (res,))
-        calc_proc.join()
-        parent_conn.close()
-        return res
+        try:
+            while calc_proc.is_alive():
+                if eventtime > last_report_time + 5.:
+                    last_report_time = eventtime
+                    gcode.respond_info("Wait for calculations..", log=False)
+                eventtime = reactor.pause(eventtime + .1)
+
+            try:
+                is_err, res = parent_conn.recv()
+            except EOFError:
+                msg = ("Error in remote calculation: calculation process "
+                       "terminated before sending a result (exit code %s)"
+                       % (calc_proc.exitcode,))
+                if calc_proc.exitcode == -9:
+                    msg += " (process was killed, likely out of memory)"
+                logging.error(msg)
+                raise self.error(msg)
+            if is_err:
+                raise self.error("Error in remote calculation: %s" % (res,))
+            return res
+        finally:
+            calc_proc.join()
+            parent_conn.close()
+
+    def _array_from_raw(self, raw_values):
+        try:
+            rows = []
+            for msg in raw_values.msgs:
+                for row in msg['data']:
+                    if row[0] < raw_values.request_start_time:
+                        continue
+                    if row[0] > raw_values.request_end_time:
+                        break
+                    rows.append(row)
+
+            del raw_values.msgs[:]
+            if not rows:
+                return None
+            return self.numpy.array(rows, dtype=self.numpy.float64)
+        except Exception as e:
+            logging.exception("Error converting accelerometer data: %s: %s"
+                              % (type(e).__name__, e))
+            raise self.error("Error converting accelerometer data: %s: %s"
+                             % (type(e).__name__, e))
 
     def _split_into_windows(self, x, window_size, overlap):
         # Memory-efficient algorithm to split an input 'x' into a series
@@ -156,10 +198,9 @@ class ShaperCalibrate:
         if isinstance(raw_values, np.ndarray):
             data = raw_values
         else:
-            samples = raw_values.get_samples()
-            if not samples:
+            data = self._array_from_raw(raw_values)
+            if data is None:
                 return None
-            data = np.array(samples)
 
         N = data.shape[0]
         T = data[-1,0] - data[0,0]
@@ -177,11 +218,17 @@ class ShaperCalibrate:
         return CalibrationData(fx, px+py+pz, px, py, pz)
 
     def process_accelerometer_data(self, data):
+        array = self._array_from_raw(data)
         calibration_data = self.background_process_exec(
-                self.calc_freq_response, (data,))
+                self.calc_freq_response, (array,))
         if calibration_data is None:
+            if array is None:
+                msg = "no samples in the measurement window"
+            else:
+                msg = "not enough samples for the frequency response " \
+                        "calculation (shape %s)" % (array.shape,)
             raise self.error(
-                    "Internal error processing accelerometer data %s" % (data,))
+                    "Error processing accelerometer data: %s" % (msg,))
         calibration_data.set_numpy(self.numpy)
         return calibration_data
 

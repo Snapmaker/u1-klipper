@@ -7,6 +7,8 @@
 import sys, os, gc, optparse, logging, time, collections, importlib, json, copy, re
 import pwd, grp
 import util, reactor, queuelogger, msgproto, queuefile
+import asyncfilereader
+import json_compat
 import gcode, configfile, pins, mcu, toolhead, webhooks, exception_manager, coded_exception, printer_device_scan
 # import traceback
 
@@ -91,14 +93,7 @@ class Printer:
         return dir
 
     def check_extruder_config_permission(self):
-        """Check if extruder config modification is permitted"""
-        config_dir = self.get_snapmaker_config_dir()
-        permission_file = os.path.join(config_dir, ".allow_extruder_modification")
-        if os.path.exists(permission_file):
-            return True
-
-        udisk_permission_file = "/mnt/udisk/.allow_extruder_modification"
-        return os.path.exists(udisk_permission_file)
+        return True
 
     def is_valid_json_format(self, obj):
         if not isinstance(obj, dict):
@@ -121,11 +116,8 @@ class Printer:
         config_info = None
         if format == 'json':
             try:
-                with open(path, 'r', encoding='utf-8') as file:
-                    config_info = json.load(file)
-                if default_config is not None:
-                    config_info.update({key: config_info.get(key, default_value) for key, default_value in default_config.items()})
-            except FileNotFoundError as e:
+                config_info = self._read_config_json(path)
+            except FileNotFoundError:
                 logging.error("config file not exits: %s" % (path))
                 if default_config is not None:
                     config_info = copy.deepcopy(default_config)
@@ -133,17 +125,39 @@ class Printer:
                     config_info = {}
                 try:
                     if create_if_not_exist:
-                        json_content = json.dumps(config_info, indent=4)
+                        json_content = json_compat.dumps(config_info, indent=4)
                         queuefile.async_write_file(path, json_content, safe_write=True)
                 except:
                     logging.error("create config file err: %s" % (path))
-            except Exception as e:
+            except Exception:
                 if default_config is not None:
                     config_info = copy.deepcopy(default_config)
                 else:
                     config_info = {}
+            else:
+                if default_config is not None:
+                    config_info.update({key: config_info.get(key, default_value)
+                                        for key, default_value in default_config.items()})
 
         return config_info
+
+    def _read_config_json(self, path):
+        """Read a JSON config file. Returns dict on success.
+        Raises FileNotFoundError if file not found.
+        Uses async read thread when reactor is running (non-blocking),
+        else synchronous (startup)."""
+        if getattr(self.reactor, '_g_dispatch', None) is not None:
+            reader = asyncfilereader.get_async_file_io()
+            req = reader.submit_read(path, parse_json=True)
+            result = reader.wait(req, self.reactor)
+            if not isinstance(result, dict):
+                raise ValueError("config file content is not a dict: %s" % path)
+            return result
+        with open(path, 'r', encoding='utf-8') as file:
+            data = json.load(file)
+        if not isinstance(data, dict):
+            raise ValueError("config file content is not a dict: %s" % path)
+        return data
 
     def update_snapmaker_config_file(self, path=None, config_info=None, default_config=None, format='json'):
         if path is None:
@@ -397,6 +411,7 @@ class Printer:
             })
             self.raise_structured_code_exception(coded, message, oneshot, is_persistent)
             self._set_state("%s\n%s" % (err_msg, message_restart))
+            self.send_event("klippy:connect_error")
             return
         except msgproto.error as e:
             msg = "Protocol error"
@@ -413,6 +428,7 @@ class Printer:
             self.raise_structured_code_exception(coded, message, oneshot, is_persistent)
             self.send_event("klippy:notify_mcu_error", "%s\n%s" % (err_msg, msg), {"error": message})
             util.dump_mcu_build()
+            self.send_event("klippy:connect_error")
             return
         except mcu.error as e:
             msg = "MCU error during connect"
@@ -449,6 +465,7 @@ class Printer:
             self.raise_structured_code_exception(coded, message, oneshot, is_persistent)
             self.send_event("klippy:notify_mcu_error", "%s\n%s" % (err_msg, msg), {"error": message})
             util.dump_mcu_build()
+            self.send_event("klippy:connect_error")
             return
         except Exception as e:
             logging.exception("Unhandled exception during connect")
@@ -462,6 +479,7 @@ class Printer:
             })
             self._set_state("%s \nInternal error during connect: %s\n%s"
                             % (err_msg, str(e), message_restart,))
+            self.send_event("klippy:connect_error")
             return
         try:
             self._set_state(message_ready)
@@ -750,6 +768,15 @@ def main():
     else:
         logging.getLogger().setLevel(debuglevel)
     queuefile.setup_bg_file_operations()
+    try:
+        asyncfilereader.setup_async_file_reader()
+    except Exception:
+        logging.exception("asyncfilereader setup failed")
+    try:
+        if not json_compat.HAS_ORJSON:
+            logging.warning("orjson not available; large JSON will hold GIL longer")
+    except Exception:
+        pass
     logging.info("Starting Klippy...")
     git_info = util.get_git_version()
     git_vers = git_info["version"]
@@ -808,6 +835,10 @@ def main():
     if bglogger is not None:
         bglogger.stop()
 
+    try:
+        asyncfilereader.clear_async_file_reader()
+    except Exception:
+        logging.exception("asyncfilereader clear failed")
     queuefile.clear_bg_file_operations()
 
     if res == 'error_exit':

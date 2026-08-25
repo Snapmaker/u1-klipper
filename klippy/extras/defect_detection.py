@@ -97,6 +97,7 @@ class DefectDetection:
         self.is_detected = False
         self.cavity_led = None
         self.print_stats = None
+        self._request_cancel_print = False
 
         self.gcode.register_command("DEFECT_DETECTION_CONFIG",
                 self.cmd_DEFECT_DETECTION_CONFIG)
@@ -119,6 +120,7 @@ class DefectDetection:
                 self._handle_pause_print_job)
         self.printer.register_event_handler('print_stats:stop',
                 self._handle_stop_print_job)
+        self.printer.register_event_handler("pause_resume:cancel", self._handle_cancel_print)
 
         webhooks = self.printer.lookup_object('webhooks', None)
         if webhooks is not None:
@@ -155,6 +157,7 @@ class DefectDetection:
             self.ignore_detect_nozzle = False
 
         self.is_pause_resume = False
+        self._request_cancel_print = False
 
     def _handle_pause_print_job(self):
         self.is_pause_resume = True
@@ -166,6 +169,9 @@ class DefectDetection:
         self.ignore_detect_start_layer = -9999999999
         self.is_pause_resume = False
         self.is_detected  = False
+
+    def _handle_cancel_print(self):
+        self._request_cancel_print = True
 
     def _handle_webhooks_config(self, web_request):
         main_enable = web_request.get_int('main_enable', None)
@@ -781,6 +787,9 @@ class DefectDetection:
                 if str(machine_sta["main_state"]) == "PRINTING":
                     self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=PRINTING ACTION=PRINT_BED_DETECTING")
 
+            if self._request_cancel_print == True:
+                return
+
             self.gcode.run_script_from_command(f"G1 Y{self.bed_detect_pos_y} F10000")
             self.gcode.run_script_from_command(f"G1 X{self.bed_detect_pos_x} F10000")
             toolhead.wait_moves()
@@ -798,6 +807,8 @@ class DefectDetection:
 
             probe_max_times = max(1, int(start_pos[2] / self.bed_detect_probe_distance))
             for probe_times in range(probe_max_times):
+                if self._request_cancel_print == True:
+                    return
                 logging.info("[defect_detection] bed probe times: %d", probe_times + 1)
                 try:
                     self.gcode.run_script_from_command(f"PROBE SAMPLE_TRIG_FREQ=450 SAMPLES=1 PROBE_SPEED=5 SAMPLE_DIST_Z={self.bed_detect_probe_distance}")
@@ -814,44 +825,64 @@ class DefectDetection:
                 if probe_times == 0:
                     pos_1 = list(toolhead.get_position())
                     if start_pos[2] - pos_1[2] < self.bed_detect_probe_distance - 0.2:
-                        current_pos = list(toolhead.get_position())
-                        toolhead.manual_move([None, None, min(current_pos[2] + 2, start_pos[2])], 30)
-                        toolhead.wait_moves()
-                        self.gcode.run_script_from_command(f"PROBE SAMPLE_TRIG_FREQ=450 SAMPLES=1 PROBE_SPEED=5 SAMPLE_DIST_Z={self.bed_detect_probe_distance}")
-                        toolhead.wait_moves()
-                        pos_2 = list(toolhead.get_position())
-                        if abs(pos_1[2] - pos_2[2]) > 0.15:
-                            gcmd.respond_info("[defect_detection] Probe accidentally triggered.")
-                            return
-                        else:
+                        for i in range(3):
+                            if self._request_cancel_print == True:
+                                return
                             current_pos = list(toolhead.get_position())
-                            safety_z += start_pos[2] - current_pos[2]
-                            toolhead.manual_move([None, None, current_pos[2] + safety_z], 30)
+                            toolhead.manual_move([None, None, min(current_pos[2] + 2, start_pos[2])], 30)
+                            toolhead.wait_moves()
+                            if self._request_cancel_print == True:
+                                return
+                            try:
+                                self.gcode.run_script_from_command(f"PROBE SAMPLE_TRIG_FREQ=450 SAMPLES=1 PROBE_SPEED=5 SAMPLE_DIST_Z={self.bed_detect_probe_distance}")
+                                toolhead.wait_moves()
+                            except Exception as e:
+                                coded_message = self.printer.extract_encoded_message(str(e))
+                                if coded_message is not None:
+                                    message = coded_message.get("msg", None)
+                                    if message != "No trigger on probe after full movement":
+                                        raise gcmd.error(str(e))
+                            pos_2 = list(toolhead.get_position())
+                            if abs(pos_1[2] - pos_2[2]) > 0.15:
+                                if i == 2:
+                                    gcmd.respond_info("[defect_detection] Probe accidentally triggered.")
+                                    return
+                                else:
+                                    gcmd.respond_info("[defect_detection] Probe accidentally triggered...retrying")
+                                    continue
+                            else:
+                                break
+
+                        current_pos = list(toolhead.get_position())
+                        safety_z += start_pos[2] - current_pos[2]
+                        toolhead.manual_move([None, None, current_pos[2] + safety_z], 30)
+                        toolhead.wait_moves()
+                        current_pos = list(toolhead.get_position())
+                        if self.request_detect_clean_bed_sync(ignore_ratio=0,
+                                                                z_pos=current_pos[2]):
+                            is_dirty_bed = True
+                            return
+
+                        for i in range(3):
+                            if self._request_cancel_print == True:
+                                return
+                            tmp_detect_status = ""
+                            if i == 2:
+                                tmp_detect_status = DETECT_STATUS_LAST_DETECT
+                            dest_z = current_pos[2] - safety_z / 3.0
+                            if abs(dest_z - pos_2[2]) < 0.5:
+                                dest_z = pos_2[2] + 0.5
+                            toolhead.manual_move([None, None, dest_z], 30)
                             toolhead.wait_moves()
                             current_pos = list(toolhead.get_position())
                             if self.request_detect_clean_bed_sync(ignore_ratio=0,
-                                                                    z_pos=current_pos[2]):
+                                                                    z_pos=current_pos[2],
+                                                                    detect_status=tmp_detect_status):
                                 is_dirty_bed = True
                                 return
 
-                            for i in range(3):
-                                tmp_detect_status = ""
-                                if i == 2:
-                                    tmp_detect_status = DETECT_STATUS_LAST_DETECT
-                                dest_z = current_pos[2] - safety_z / 3.0
-                                if abs(dest_z - pos_2[2]) < 0.5:
-                                    dest_z = pos_2[2] + 0.5
-                                toolhead.manual_move([None, None, dest_z], 30)
-                                toolhead.wait_moves()
-                                current_pos = list(toolhead.get_position())
-                                if self.request_detect_clean_bed_sync(ignore_ratio=0,
-                                                                        z_pos=current_pos[2],
-                                                                        detect_status=tmp_detect_status):
-                                    is_dirty_bed = True
-                                    return
-
-                            logging.info("[defect_detection] not detected dirty bed")
-                            return
+                        logging.info("[defect_detection] not detected dirty bed")
+                        return
                     else:
                         current_pos = list(toolhead.get_position())
                         if self.request_detect_clean_bed_sync(ignore_ratio=0,
@@ -860,6 +891,8 @@ class DefectDetection:
                             return
                         toolhead.manual_move([None, None, current_pos[2] + 5], 30)
                         toolhead.wait_moves()
+                        if self._request_cancel_print == True:
+                            return
                         current_pos = list(toolhead.get_position())
                         if self.request_detect_clean_bed_sync(ignore_ratio=0,
                                                                 z_pos=current_pos[2]):
@@ -877,6 +910,8 @@ class DefectDetection:
                             return
                         toolhead.manual_move([None, None, current_pos[2] + 5], 30)
                         toolhead.wait_moves()
+                        if self._request_cancel_print == True:
+                            return
                         current_pos = list(toolhead.get_position())
                         if probe_times == probe_max_times - 1:
                             if self.request_detect_clean_bed_sync(ignore_ratio=0,
@@ -895,6 +930,8 @@ class DefectDetection:
                         current_pos = list(toolhead.get_position())
                         toolhead.manual_move([None, None, current_pos[2] + 5], 30)
                         toolhead.wait_moves()
+                        if self._request_cancel_print == True:
+                            return
                         current_pos = list(toolhead.get_position())
                         if self.request_detect_clean_bed_sync(ignore_ratio=0,
                                                                 z_pos=current_pos[2],

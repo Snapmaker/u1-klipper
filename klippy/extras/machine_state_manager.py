@@ -32,7 +32,7 @@ class ActionCode(IntEnum):
     IDLE = 0
     HOMING = 1
     DETECT_PLATE = 2
-    PREHRAT_CHAMBER = 3
+    PREHEAT_CHAMBER = 3
     # Printing
     PRINT_PL_RESTORE = 128
     PRINT_PAUSED = 129 # not used

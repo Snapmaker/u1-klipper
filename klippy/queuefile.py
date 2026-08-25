@@ -1,4 +1,4 @@
-import threading, queue, time, os, shutil
+import threading, queue, time, os, shutil, logging
 from concurrent.futures import Future
 
 QUEUE_SIZE = 1000
@@ -235,6 +235,34 @@ def sync_delete_file(reactor, filename, timeout=None):
 
         reactor.pause(reactor.monotonic() + 0.01)
     return op.future.result()
+
+def sync_delete_files_batch(reactor, filenames, timeout=None):
+    """Submit all delete ops at once, then poll all futures together.
+    Non-existent files are no-ops (the worker checks existence).
+    Avoids per-file serial pause overhead."""
+    listener = setup_bg_file_operations()
+    timeout = timeout or DEFAULT_SYNC_TIMEOUT
+    ops = []
+    for filename in filenames:
+        op = FileOperation("delete", filename, None, False, sync=True, timeout=timeout)
+        try:
+            listener.handler.bg_queue.put_nowait(op)
+            ops.append(op)
+        except queue.Full:
+            logging.warning("sync_delete_files_batch: queue full, skip %s", filename)
+    deadline = reactor.monotonic() + timeout
+    for op in ops:
+        while not op.future.done():
+            if reactor.monotonic() > deadline:
+                logging.warning("sync_delete_files_batch: timeout for %s", op.filename)
+                break
+            reactor.pause(reactor.monotonic() + 0.01)
+    for op in ops:
+        if op.future.done() and op.future.exception() is not None:
+            logging.warning("sync_delete_files_batch: delete failed for %s: %s",
+                            op.filename, op.future.exception())
+    succeeded = sum(1 for op in ops if op.future.done() and op.future.exception() is None)
+    return succeeded
 
 def sync_append_file(reactor, filename, content, flush=False, safe_write=False, timeout=None):
     listener = setup_bg_file_operations()

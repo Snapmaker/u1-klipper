@@ -6,6 +6,7 @@
 import os, sys, logging, io
 import json, re, copy, tarfile, threading, queuefile
 from json_compat import dumps
+from asyncfilereader import AsyncFileReader, get_async_file_io
 
 MAX_TOOL_NUMBER = 32
 VALID_GCODE_EXTS = ['gcode', 'g', 'gco']
@@ -167,8 +168,10 @@ class VirtualSD:
             try:
                 readpos = max(self.file_position - 1024, 0)
                 readcount = self.file_position - readpos
-                self.current_file.seek(readpos)
-                data = self.current_file.read(readcount + 128)
+                fname = self.current_file.name
+                with open(fname, 'r', newline='') as f:
+                    f.seek(readpos)
+                    data = f.read(readcount + 128)
             except:
                 logging.exception("virtual_sdcard shutdown read")
                 return
@@ -207,32 +210,16 @@ class VirtualSD:
             return False, ""
         return True, "sd_pos=%d" % (self.file_position,)
     def get_file_list(self, check_subdirs=False):
-        if check_subdirs:
-            flist = []
-            for root, dirs, files in os.walk(
-                    self.sdcard_dirname, followlinks=True):
-                for name in files:
-                    ext = name[name.rfind('.')+1:]
-                    if ext not in VALID_GCODE_EXTS:
-                        continue
-                    full_path = os.path.join(root, name)
-                    r_path = full_path[len(self.sdcard_dirname) + 1:]
-                    size = os.path.getsize(full_path)
-                    flist.append((r_path, size))
-            return sorted(flist, key=lambda f: f[0].lower())
-        else:
-            dname = self.sdcard_dirname
-            try:
-                filenames = os.listdir(self.sdcard_dirname)
-                return [(fname, os.path.getsize(os.path.join(dname, fname)))
-                        for fname in sorted(filenames, key=str.lower)
-                        if not fname.startswith('.')
-                        and os.path.isfile((os.path.join(dname, fname)))]
-            except:
-                logging.exception("virtual_sdcard get_file_list")
-                error = '{"coded": "0001-0531-0000-0000", "msg":"%s", "action": "none"}' % ("Unable to get file list")
-                raise self.gcode.error(error)
-                # raise self.gcode.error("Unable to get file list")
+        try:
+            reader = get_async_file_io()
+            req = reader.submit_listdir(self.sdcard_dirname,
+                                     exts=VALID_GCODE_EXTS if check_subdirs else None,
+                                     recursive=check_subdirs)
+            return reader.wait(req, self.reactor)
+        except Exception:
+            logging.exception("virtual_sdcard get_file_list")
+            error = '{"coded": "0001-0531-0000-0000", "msg":"%s", "action": "none"}' % ("Unable to get file list")
+            raise self.gcode.error(error)
     def get_status(self, eventtime):
         return {
             'file_path': self.file_path(),
@@ -339,6 +326,27 @@ class VirtualSD:
         filename = gcmd.get("FILENAME")
         if filename[0] == '/':
             filename = filename[1:]
+        try:
+            self.gcode.run_script_from_command("PRINT_PRESTART_CHECK")
+        except Exception as e:
+            exception_info = str(e)
+            logging.exception("{}".format(exception_info))
+            if "auto feeding batch is in progress" in exception_info:
+                raise gcmd.error(
+                    message = "auto feeding batch is in progress, cannot start print!",
+                    id = 531,
+                    index = 0,
+                    code = 21,
+                    oneshot = 1,
+                    level = 3)
+            else:
+                raise gcmd.error(
+                    message = "{}".format(exception_info),
+                    id = 531,
+                    index = 0,
+                    code = 23,
+                    oneshot = 1,
+                    level = 3)
         self.rm_power_loss_info()
         self._load_file(gcmd, filename, check_subdirs=True)
         self.gcode.run_script_from_command("TURN_OFF_HEATERS")
@@ -361,6 +369,28 @@ class VirtualSD:
         filename = gcmd.get("FILENAME")
         if filename[0] == '/':
             filename = filename[1:]
+        try:
+            self.gcode.run_script_from_command("PRINT_PRESTART_CHECK")
+        except Exception as e:
+            exception_info = str(e)
+            logging.exception("{}".format(exception_info))
+            if "auto feeding batch is in progress" in exception_info:
+                raise gcmd.error(
+                    message = "auto feeding batch is in progress, cannot start print!",
+                    id = 531,
+                    index = 0,
+                    code = 21,
+                    oneshot = 1,
+                    level = 3)
+            else:
+                raise gcmd.error(
+                    message = "{}".format(exception_info),
+                    id = 531,
+                    index = 0,
+                    code = 23,
+                    oneshot = 1,
+                    level = 3)
+
         self.rm_power_loss_info()
         self._load_file(gcmd, filename, check_subdirs=True)
         self.gcode.run_script_from_command("TURN_OFF_HEATERS")
@@ -446,6 +476,9 @@ class VirtualSD:
                 # raise gcmd.error("Do not delete power-loss info during printing")
         self.gcode.run_script_from_command("TIMELAPSE_STOP FORCE=1\r\n")
         self.rm_power_loss_info()
+        print_task_config = self.printer.lookup_object('print_task_config', None)
+        if print_task_config is not None:
+            print_task_config.reset_print_info(is_finish_print=True)
     def _load_file(self, gcmd, filename, check_subdirs=False, reprint=False):
         files = self.get_file_list(check_subdirs)
         flist = [f[0] for f in files]
@@ -455,10 +488,8 @@ class VirtualSD:
             if fname not in flist:
                 fname = files_by_lower[fname.lower()]
             fname = os.path.join(self.sdcard_dirname, fname)
-            f = io.open(fname, 'r', newline='')
-            f.seek(0, os.SEEK_END)
-            fsize = f.tell()
-            f.seek(0)
+            f = AsyncFileReader(fname, self.reactor)
+            fsize = f.size
         except Exception as e:
             logging.exception(f"virtual_sdcard file open: {str(e)}")
             error_msg = '{"coded": "0001-0531-0000-0004", "msg":"%s", "action": "none"}' % (
@@ -505,9 +536,15 @@ class VirtualSD:
         self.reactor.unregister_timer(self.work_timer)
         exception_manager = self.printer.lookup_object('exception_manager', None)
         print_task_config = self.printer.lookup_object('print_task_config', None)
+        defect_detection = self.printer.lookup_object('defect_detection', None)
 
         if print_task_config is not None:
             print_task_config.set_new_print_info()
+
+        if print_task_config is not None:
+            logging.info(f"print_task_config: {print_task_config.get_status()}")
+        if defect_detection is not None:
+            logging.info(f"defect_detection: {defect_detection.get_status()}")
 
         try:
             self.current_file.seek(self.file_position)
@@ -720,6 +757,7 @@ class VirtualSD:
             except:
                 logging.exception("virtual_sdcard on_error")
             self.print_stats.note_cancel()
+            self.exit_to_idle()
         elif error_message is not None and action not in ['pause', 'pause_runout']:
             self.print_stats.note_error(error_message)
             self.exit_to_idle()
@@ -811,15 +849,14 @@ class VirtualSD:
                     *[self.pl_print_file_move_env_path.replace('.json', f'_{i}.json')
                         for i in range(self.max_file_count)]
                 ]
-
+                all_paths = []
                 for p in rm_paths:
-                    try:
-                        if os.path.exists(p):
-                            queuefile.sync_delete_file(self.printer.get_reactor(), p)
-                        if os.path.exists(p + '.tmp'):
-                            queuefile.sync_delete_file(self.printer.get_reactor(), p + '.tmp')
-                    except Exception as e:
-                        logging.warning(f"Failed to delete {p} or {p}.tmp: {e}")
+                    all_paths.append(p)
+                    all_paths.append(p + '.tmp')
+                try:
+                    queuefile.sync_delete_files_batch(self.printer.get_reactor(), all_paths)
+                except Exception as e:
+                    logging.warning(f"Failed to delete power_loss files: {e}")
                 self.pl_env_valid = False
                 self._pl_cache.clear()
                 logging.info("rm power_loss info success")
@@ -1153,11 +1190,11 @@ class VirtualSD:
             gcode_tracker.set_factors(factors['flow_factor'], factors['speed_factor'], factors['speed_factor_bak'])
             gcode_tracker.set_print_task_config(self.print_task_config)
             gcode_tracker.set_exclude_object(pl_save_data['current_object'], print_objects, exclude_objects)
-            with io.open(file_path, 'r', newline='') as f:
+            with io.open(file_path, 'rb') as f:
                 f.seek(pl_save_data['file_pos'])
                 current_line = pl_save_data['line_count']
                 while current_line <= target_line:
-                    line = f.readline()
+                    line = f.readline().decode('utf-8')
                     last_file_pos = cur_file_pos
                     cur_file_pos = f.tell()
                     if not line:  # EOF
@@ -1189,24 +1226,41 @@ class VirtualSD:
 
 
     def pl_find_latest_move_env(self, line_cnt):
-        last_file_index = None
-        pl_save_data = None
-        min_diff = float('inf')
+        try:
+            reader = get_async_file_io()
+        except Exception:
+            logging.exception("pl_find_latest_move_env: async read unavailable")
+            return (None, None)
+        reqs = []
         for i in range(self.max_file_count):
             file_path = self.pl_print_file_move_env_path.replace('.json', f'_{i}.json')
+            reqs.append((i, file_path, reader.submit_read(file_path, parse_json=True)))
+        deadline = self.reactor.monotonic() + 30.0
+        contents = {}
+        for i, file_path, req in reqs:
             try:
-                if os.path.exists(file_path):
-                    with open(file_path, 'r') as f:
-                        content = json.load(f)
-                        file_line_cnt = content.get('line_count', 0)
-                        diff = line_cnt - file_line_cnt
-                        if diff >= 0 and diff < min_diff:
-                            min_diff = diff
-                            last_file_index = i
-                            pl_save_data = content
+                while not req.done.is_set():
+                    if self.reactor.monotonic() > deadline:
+                        break
+                    self.reactor.pause(self.reactor.monotonic() + 0.01)
+                if req.error is not None or req.result is None:
+                    continue
+                if not isinstance(req.result, dict):
+                    continue
+                contents[i] = req.result
             except Exception as e:
                 logging.warning(f"Error reading file {file_path}: {e}")
                 continue
+        last_file_index = None
+        pl_save_data = None
+        min_diff = float('inf')
+        for i, content in contents.items():
+            file_line_cnt = content.get('line_count', 0)
+            diff = line_cnt - file_line_cnt
+            if diff >= 0 and diff < min_diff:
+                min_diff = diff
+                last_file_index = i
+                pl_save_data = content
         return (last_file_index, pl_save_data) if last_file_index is not None else (None, None)
 
     def force_refresh_move_env_extruder(self, extruder_name, sync=False, flush=True, safe_write=True):
@@ -1284,37 +1338,44 @@ class VirtualSD:
         self.current_file_index = (last_file_index + 1) % self.max_file_count
 
     def rm_power_loss_move_env_file(self, save_file_list=[]):
-        failed_files = []
         total_removed = 0
         try:
+            paths = []
             for i in range(self.max_file_count):
-                file_path = self.pl_print_file_move_env_path.replace('.json', f'_{i}.json')
-                if not os.path.exists(file_path):
+                if save_file_list and i in save_file_list:
                     continue
-
-                if not save_file_list or i not in save_file_list:
-                    try:
-                        queuefile.sync_delete_file(self.printer.get_reactor(), file_path)
-                        self._pl_cache.pop(file_path, None)
-                        total_removed += 1
-                    except Exception as e:
-                        failed_files.append(file_path)
-                        logging.error(f"Failed to remove move env file {file_path}: {e}")
-                        continue
-            logging.info(f"rm_power_loss_move_env completed, removed {total_removed} files")
-
-            if failed_files:
-                logging.error(f"Failed to remove {len(failed_files)} files: {', '.join(failed_files)}")
+                file_path = self.pl_print_file_move_env_path.replace('.json', f'_{i}.json')
+                paths.append(file_path)
+                self._pl_cache.pop(file_path, None)
+            try:
+                total_removed = queuefile.sync_delete_files_batch(self.printer.get_reactor(), paths)
+            except Exception as e:
+                logging.error(f"Failed to batch remove move env files: {e}")
+            logging.info(f"rm_power_loss_move_env completed, processed {total_removed} files")
 
         except Exception as e:
             logging.error(f"Unexpected error in rm_power_loss_move_env: {e}")
 
     def _pl_read_file(self, file_path):
-        """Read PL JSON file via direct I/O."""
-        if os.path.exists(file_path):
-            with open(file_path, 'r') as f:
-                return json.load(f)
-        return {}
+        """Read PL JSON file via the async read thread (non-blocking)."""
+        if getattr(self.reactor, '_g_dispatch', None) is None:
+            if not os.path.exists(file_path):
+                return {}
+            try:
+                with open(file_path, 'r') as f:
+                    return json.load(f)
+            except Exception:
+                logging.exception("Failed to read (sync) %s" % file_path)
+                return {}
+        try:
+            reader = get_async_file_io()
+            req = reader.submit_read(file_path, parse_json=True)
+            return reader.wait(req, self.reactor)
+        except FileNotFoundError:
+            return {}
+        except Exception:
+            logging.exception("Failed to read %s" % file_path)
+            return {}
 
     def save_environment_data(self, file_path, data_dict={}, sync=False,
                               flush=True, safe_write=True, replace=False):
