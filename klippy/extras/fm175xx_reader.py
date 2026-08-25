@@ -241,6 +241,7 @@ class FM175XXReader:
         self.__printer.register_event_handler("klippy:ready", self.__ready)
         self.__printer.register_event_handler("klippy:shutdown", self.__shutdown)
         self.__printer.register_event_handler("gcode:request_restart", self.__shutdown)
+        self.__printer.register_event_handler('klippy:connect_error', self.__shutdown)
 
     def __ready(self):
         # Threading

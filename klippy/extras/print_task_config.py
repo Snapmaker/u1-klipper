@@ -12,6 +12,8 @@ ENTANGLE_SENSITIVITY_LOW    = 'low'
 ENTANGLE_SENSITIVITY_MEDIUM = 'medium'
 ENTANGLE_SENSITIVITY_HIGH   = 'high'
 
+SNAPMAKER_OFFICIAL_ORCASLICER = 'SnapmakerOrca'
+
 FILAMENT_COLOR_NUMS_MAX     = 5
 
 INVALID_WB_NUMBER = -9999999
@@ -64,14 +66,18 @@ DEFAULT_PRINT_TASK_CONFIG_2 = {
     'line_width': 0,
     'layer_height': 0,
     'outer_wall_speed': 0,
+    'outer_wall_speed_hf': 0,
+    'outer_wall_accel': 0,
+    'outer_wall_accel_hf': 0,
     'nozzle_temp': [0] * LOGICAL_EXTRUDER_NUM,
     'nozzle_diameter': [0] * LOGICAL_EXTRUDER_NUM,
     'filament_type': [None] * LOGICAL_EXTRUDER_NUM,
     'filament_diameter': [0] * LOGICAL_EXTRUDER_NUM,
     'filament_used_g': [0] * LOGICAL_EXTRUDER_NUM,
     'filament_used_mm': [0] * LOGICAL_EXTRUDER_NUM,
-    'filament_flow_ratio': [0] * LOGICAL_EXTRUDER_NUM,
+    'filament_flow_ratio': [1.0] * LOGICAL_EXTRUDER_NUM,
     'filament_max_vol_speed': [0] * LOGICAL_EXTRUDER_NUM,
+    'filament_volume_type': ['standard'] * LOGICAL_EXTRUDER_NUM,
 }
 
 class PrintTaskConfig:
@@ -364,6 +370,27 @@ class PrintTaskConfig:
             # do not use run_script_from_command api
             self.gcode.run_script(f"FLOW_RESET_K EXTRUDER={channel}\r\n")
 
+    def reset_filament_info(self, extruder_index):
+        if extruder_index < 0 or extruder_index >= PHYSICAL_EXTRUDER_NUM:
+            logging.error(f"[print_task_config] reset_filament_info: extruder_index error: {extruder_index}")
+            return False
+
+        logging.info(f"[print_task_config] reset_filament_info: {extruder_index}")
+        tmp_print_task_config = copy.deepcopy(self.print_task_config)
+        try:
+            tmp_print_task_config['filament_vendor'][extruder_index] = "NONE"
+            tmp_print_task_config['filament_type'][extruder_index] = "NONE"
+            tmp_print_task_config['filament_sub_type'][extruder_index] = "NONE"
+        except Exception as e:
+            logging.error(f"[print_task_config] reset_filament_info error: {str(e)}")
+            return False
+        else:
+            self.print_task_config = tmp_print_task_config
+            if not self.printer.update_snapmaker_config_file(self.config_path,
+                    self.print_task_config, DEFAULT_PRINT_TASK_CONFIG):
+                logging.error("[print_task_config] save print_task_config failed\r\n")
+            return True
+
     def get_extruder_map_table(self):
         return self.print_task_config['extruder_map_table']
 
@@ -373,11 +400,12 @@ class PrintTaskConfig:
         else:
             return self.print_task_config['extruder_map_table'][index]
 
-    def reset_print_info(self):
+    def reset_print_info(self, is_finish_print=False):
         try:
             logging.info("[print_task_config] reset print info")
             self.is_exec_print_end_action = False
-            self.print_task_config_2 = copy.deepcopy(DEFAULT_PRINT_TASK_CONFIG_2)
+            if is_finish_print:
+                self.print_task_config_2 = copy.deepcopy(DEFAULT_PRINT_TASK_CONFIG_2)
             tmp_print_task_config = copy.deepcopy(self.print_task_config)
             tmp_print_task_config['extruder_map_table'] = copy.deepcopy(DEFAULT_PRINT_TASK_CONFIG['extruder_map_table'])
             tmp_print_task_config['extruders_used'] = copy.deepcopy(DEFAULT_PRINT_TASK_CONFIG['extruders_used'])
@@ -406,12 +434,13 @@ class PrintTaskConfig:
         except Exception as e:
             logging.error("[print_task_config] reset print info failed: %s", str(e))
             self.print_task_config = copy.deepcopy(DEFAULT_PRINT_TASK_CONFIG)
-            self.print_task_config_2 = copy.deepcopy(DEFAULT_PRINT_TASK_CONFIG_2)
+            if is_finish_print:
+                self.print_task_config_2 = copy.deepcopy(DEFAULT_PRINT_TASK_CONFIG_2)
         finally:
             if not self.printer.update_snapmaker_config_file(self.config_path,
                     self.print_task_config, DEFAULT_PRINT_TASK_CONFIG):
                 logging.error("[print_task_config] save print_task_config failed\r\n")
-            if not self.printer.update_snapmaker_config_file(self.config_path_2,
+            if is_finish_print and not self.printer.update_snapmaker_config_file(self.config_path_2,
                     self.print_task_config_2, DEFAULT_PRINT_TASK_CONFIG_2):
                 logging.error("[print_task_config] save print_task_config_2 failed\r\n")
 
@@ -859,15 +888,16 @@ class PrintTaskConfig:
             except Exception as e:
                 logging.error("[print_task_config] INNER_CHECK_AND_RELOAD_FILAMENT_INFO error: %s", str(e))
 
-        if self.print_task_config['filament_type'][extruder_index] == "" or self.print_task_config['filament_type'][extruder_index] == "NONE":
-            raise gcmd.error(
-                    message = f"e{extruder_index} not edit filament",
-                    action = 'pause',
-                    id = 523,
-                    index = extruder_index,
-                    code = 39,
-                    oneshot = 1,
-                    level = 2)
+        if self.print_task_config['extruders_used'][extruder_index] == True:
+            if self.print_task_config['filament_type'][extruder_index] == "" or self.print_task_config['filament_type'][extruder_index] == "NONE":
+                raise gcmd.error(
+                        message = f"e{extruder_index} not edit filament",
+                        action = 'pause',
+                        id = 523,
+                        index = extruder_index,
+                        code = 39,
+                        oneshot = 1,
+                        level = 2)
 
     def cmd_INNER_AUTO_REPLENISH_FILAMENT(self, gcmd):
         self.perform_auto_replenish = False
@@ -912,9 +942,11 @@ class PrintTaskConfig:
 
         replenish_extruder = None
         replenish_extruder_name = None
-        current_extruder_name = toolhead.get_extruder().name
+        current_extruder_obj = toolhead.get_extruder()
+        current_extruder_name = current_extruder_obj.name
         current_extruder_temp = macro.variables.get('last_extruder_temp', 0)
-        current_extruder_nozzle_diameter = toolhead.get_extruder().nozzle_diameter
+        current_extruder_nozzle_diameter = current_extruder_obj.nozzle_diameter
+        current_extruder_nozzle_volume_type = current_extruder_obj.nozzle_volume_type
 
         filament_feed_infos = {}
         for obj_name, obj in self.filament_feed_objects:
@@ -930,6 +962,8 @@ class PrintTaskConfig:
                 runout_sensor.get_status(0)['enabled'] == True:
             replenish_extruder = current_extruder
         else:
+            best_match_extruder = None
+            best_match_distance = None
             for i in range(PHYSICAL_EXTRUDER_NUM):
                 if i == current_extruder:
                     continue
@@ -941,6 +975,8 @@ class PrintTaskConfig:
                     continue
                 else:
                     if extruder_obj.nozzle_diameter != current_extruder_nozzle_diameter:
+                        continue
+                    if extruder_obj.nozzle_volume_type != current_extruder_nozzle_volume_type:
                         continue
 
                 runout_sensor = self.printer.lookup_object(f"filament_motion_sensor e{i}_filament", None)
@@ -957,11 +993,20 @@ class PrintTaskConfig:
                             self.print_task_config['filament_type'][i] == self.filament_info_backup['filament_type'][current_extruder] and \
                             self.print_task_config['filament_sub_type'][i] == self.filament_info_backup['filament_sub_type'][current_extruder]:
                         if self.print_task_config['filament_color_multi'][i] == self.filament_info_backup['filament_color_multi'][current_extruder]:
+                            # Exact match (regardless of single or multi color) - highest priority
                             replenish_extruder = i
                             break
-                        elif self.print_task_config['replenish_ignore_color'] == True and replenish_extruder is None:
-                            replenish_extruder = i
-                            # don't break, keep looking for exact color match
+                        elif self.print_task_config['replenish_ignore_color'] == True:
+                            # Weighted RGB distance match against the first color
+                            color1 = self.print_task_config['filament_color_multi'][i]['colors'][0]
+                            color2 = self.filament_info_backup['filament_color_multi'][current_extruder]['colors'][0]
+                            distance = self._weighted_rgb_distance(color1, color2)
+                            if best_match_distance is None or distance < best_match_distance:
+                                best_match_distance = distance
+                                best_match_extruder = i
+
+        if replenish_extruder is None and best_match_extruder is not None:
+            replenish_extruder = best_match_extruder
 
         if replenish_extruder == None:
             runout_sensors = self.printer.lookup_objects('filament_motion_sensor')
@@ -970,17 +1015,20 @@ class PrintTaskConfig:
                 status = obj.get_status(0)
                 runout_sensor_infos[obj_name] = status
             extruder_nozzle_diameter = []
+            extruder_nozzle_volume_type = []
             for i in range(PHYSICAL_EXTRUDER_NUM):
                 extruder_obj = self.printer.lookup_object(f"extruder", None)
                 if i != 0:
                     extruder_obj = self.printer.lookup_object(f"extruder{i}", None)
                 extruder_nozzle_diameter.append(extruder_obj.nozzle_diameter)
+                extruder_nozzle_volume_type.append(extruder_obj.nozzle_volume_type)
             logging.info("[print_task_config] =========== cannot auto replenish filament ====================== ")
             logging.info(f"feeder info: {str(filament_feed_infos)}")
             logging.info(f"runout sensor info: {str(runout_sensor_infos)}")
             logging.info(f"backup info: {str(self.filament_info_backup)}")
             logging.info(f"filament info: {str(self.print_task_config)}")
             logging.info(f"extruder nozzle diameter: {str(extruder_nozzle_diameter)}")
+            logging.info(f"extruder nozzle volume type: {str(extruder_nozzle_volume_type)}")
             logging.info("[print_task_config] ================================================================= ")
             return
         else:
@@ -1028,6 +1076,18 @@ class PrintTaskConfig:
         else:
             raise ValueError("Not a list")
 
+    @staticmethod
+    def _weighted_rgb_distance(hex1, hex2):
+        """Calculate weighted RGB distance between two 6-char hex color strings.
+        Uses Rec. 601 luma weights for human perception (green weighted highest).
+        """
+        r1, g1, b1 = int(hex1[0:2], 16), int(hex1[2:4], 16), int(hex1[4:6], 16)
+        r2, g2, b2 = int(hex2[0:2], 16), int(hex2[2:4], 16), int(hex2[4:6], 16)
+        # Weighted Euclidean distance: R=0.299, G=0.587, B=0.114
+        return ((0.299 * (r1 - r2)) ** 2 +
+                (0.587 * (g1 - g2)) ** 2 +
+                (0.114 * (b1 - b2)) ** 2) ** 0.5
+
     def cmd_SET_PRINT_TASK_PARAMETERS(self, gcmd):
         logging.info("[print_task_config] SET_PRINT_TASK_PARAMETERS %s", gcmd.get_raw_command_parameters())
 
@@ -1042,17 +1102,23 @@ class PrintTaskConfig:
 
         line_width = gcmd.get_float('LINE_WIDTH', None)
         layer_height = gcmd.get_float('LAYER_HEIGHT', None)
-        outer_wall_speed = gcmd.get_float('OUTER_WALL_SPEED', None)
+        outer_wall_speed_list = gcmd.get('OUTER_WALL_SPEED_LIST', None)
+        outer_wall_accel_list = gcmd.get('OUTER_WALL_ACCELERATION_LIST', None)
+        process_flow_support = gcmd.get('PROCESS_FLOW_SUPPORT', None)
 
         nozzle_diameter = gcmd.get('NOZZLE_DIAMETER_LIST', None)
         nozzle_temp = gcmd.get('NOZZLE_TEMP', None)
         filament_type = gcmd.get('FILAMENT_TYPE', None)
         filament_flow_ratio = gcmd.get('FILAMENT_FLOW_RATIO', None)
-        filament_max_vol_speed = gcmd.get('FILAMENT_MAX_VOL_SPEED', None)
+        filament_max_vol_speed = gcmd.get('FILAMENT_MAX_VOLUMETRIC_SPEED', None)
+        filament_volume_type = gcmd.get('FILAMENT_VOLUME_TYPE', None)
 
 
         filament_used_g = gcmd.get('FILAMENT_USED_G', None)
         filament_used_mm = gcmd.get('FILAMENT_USED_MM', None)
+
+        slicer = gcmd.get('SLICER', None)
+        slicer_version = gcmd.get('SLICER_VERSION', None)
 
         exception_id = 531
         exception_code = 17
@@ -1069,21 +1135,23 @@ class PrintTaskConfig:
                 code = exception_code,
                 index = exception_index,
                 level = exception_level,
-                oneshot = exception_oneshot
-                )
+                oneshot = exception_oneshot)
 
         try:
             tmp_print_task_config = copy.deepcopy(self.print_task_config)
-            tmp_print_task_config_2 = copy.deepcopy(self.print_task_config_2)
-
-            # actual nozzle diameter
+            tmp_print_task_config_2 = copy.deepcopy(DEFAULT_PRINT_TASK_CONFIG_2)
+            tmp_print_task_config['extruder_map_table'] = copy.deepcopy(DEFAULT_PRINT_TASK_CONFIG['extruder_map_table'])
+            tmp_print_task_config['extruders_used'] = [False for i in range(PHYSICAL_EXTRUDER_NUM)]
+            # actual nozzle properties
             actual_nozzle_diameter = [0.4] * PHYSICAL_EXTRUDER_NUM
+            actual_nozzle_volume_type = ['standard'] * PHYSICAL_EXTRUDER_NUM
             for i in range(PHYSICAL_EXTRUDER_NUM):
                 extruder_obj = self.printer.lookup_object('extruder', None)
                 if i != 0:
                     extruder_obj = self.printer.lookup_object(f'extruder{i}', None)
                 if extruder_obj is not None:
                     actual_nozzle_diameter[i] = extruder_obj.nozzle_diameter
+                    actual_nozzle_volume_type[i] = extruder_obj.nozzle_volume_type
                 else:
                     raise gcmd.error(f"[print_task_config] Cannot find extruder:{i}")
 
@@ -1154,116 +1222,174 @@ class PrintTaskConfig:
                 tmp_print_task_config_2['line_width'] = line_width
             if layer_height is not None:
                 tmp_print_task_config_2['layer_height'] = layer_height
-            if outer_wall_speed is not None:
-                tmp_print_task_config_2['outer_wall_speed'] = outer_wall_speed
 
-            if filament_type is not None:
-                filament_type_list = None
-                try:
+            try:
+                if filament_type is not None:
                     filament_type_list = self._parse_str_to_list(filament_type)
-                except:
-                    raise gcmd.error("[print_task_config] Invalid FILAMENT_TYPE")
 
-                if len(filament_type_list) > LOGICAL_EXTRUDER_NUM:
-                    raise gcmd.error("[print_task_config] Invalid FILAMENT_TYPE")
-
-                for i in range(len(filament_type_list)):
-                    if not isinstance(filament_type_list[i], str):
+                    if len(filament_type_list) > LOGICAL_EXTRUDER_NUM:
                         raise gcmd.error("[print_task_config] Invalid FILAMENT_TYPE")
-                    tmp_print_task_config_2['filament_type'][i] = filament_type_list[i]
 
-            if nozzle_diameter is not None:
-                nozzle_diameter_list = None
-                try:
-                    nozzle_diameter_list = self._parse_str_to_list(nozzle_diameter)
-                except:
-                    raise gcmd.error("[print_task_config] Invalid NOZZLE_DIAMETER")
+                    for i in range(len(filament_type_list)):
+                        if not isinstance(filament_type_list[i], str):
+                            raise gcmd.error("[print_task_config] Invalid FILAMENT_TYPE")
+                        tmp_print_task_config_2['filament_type'][i] = filament_type_list[i]
+            except Exception as e:
+                logging.exception(e)
+                tmp_print_task_config_2['filament_type'] = [None for i in range(LOGICAL_EXTRUDER_NUM)]
 
-                if len(nozzle_diameter_list) > LOGICAL_EXTRUDER_NUM:
-                    raise gcmd.error("[print_task_config] Invalid NOZZLE_DIAMETER")
+            try:
+                if nozzle_diameter is not None:
+                    nozzle_diameter_list  = self._parse_str_to_list(nozzle_diameter)
 
-                for i in range(len(nozzle_diameter_list)):
-                    if not isinstance(nozzle_diameter_list[i], float):
+                    if len(nozzle_diameter_list) > LOGICAL_EXTRUDER_NUM:
                         raise gcmd.error("[print_task_config] Invalid NOZZLE_DIAMETER")
-                    tmp_print_task_config_2['nozzle_diameter'][i] = float(nozzle_diameter_list[i])
 
-            if nozzle_temp is not None:
-                nozzle_temp_list = None
-                try:
+                    for i in range(len(nozzle_diameter_list)):
+                        if not isinstance(nozzle_diameter_list[i], float):
+                            raise gcmd.error("[print_task_config] Invalid NOZZLE_DIAMETER")
+                        tmp_print_task_config_2['nozzle_diameter'][i] = float(nozzle_diameter_list[i])
+            except Exception as e:
+                logging.exception(e)
+                tmp_print_task_config_2['nozzle_diameter'] = [0 for i in range(LOGICAL_EXTRUDER_NUM)]
+
+            try:
+                if nozzle_temp is not None:
                     nozzle_temp_list = self._parse_str_to_list(nozzle_temp)
-                except:
-                    raise gcmd.error("[print_task_config] Invalid NOZZLE_TEMP")
 
-                if len(nozzle_temp_list) > LOGICAL_EXTRUDER_NUM:
-                    raise gcmd.error("[print_task_config] Invalid NOZZLE_TEMP")
-
-                for i in range(len(nozzle_temp_list)):
-                    if not isinstance(nozzle_temp_list[i], float) and not isinstance(nozzle_temp_list[i], int):
+                    if len(nozzle_temp_list) > LOGICAL_EXTRUDER_NUM:
                         raise gcmd.error("[print_task_config] Invalid NOZZLE_TEMP")
-                    tmp_print_task_config_2['nozzle_temp'][i] = float(nozzle_temp_list[i])
 
-            if filament_flow_ratio is not None:
-                filament_flow_ratio_list = None
-                try:
+                    for i in range(len(nozzle_temp_list)):
+                        if not isinstance(nozzle_temp_list[i], float) and not isinstance(nozzle_temp_list[i], int):
+                            raise gcmd.error("[print_task_config] Invalid NOZZLE_TEMP")
+                        tmp_print_task_config_2['nozzle_temp'][i] = float(nozzle_temp_list[i])
+            except Exception as e:
+                logging.exception(e)
+                tmp_print_task_config_2['nozzle_temp'] = [0 for i in range(LOGICAL_EXTRUDER_NUM)]
+
+            try:
+                if filament_flow_ratio is not None:
                     filament_flow_ratio_list = self._parse_str_to_list(filament_flow_ratio)
-                except:
-                    raise gcmd.error("[print_task_config] Invalid FILAMENT_FLOW_RATIO")
 
-                if len(filament_flow_ratio_list) > LOGICAL_EXTRUDER_NUM:
-                    raise gcmd.error("[print_task_config] Invalid FILAMENT_FLOW_RATIO")
-
-                for i in range(len(filament_flow_ratio_list)):
-                    if not isinstance(filament_flow_ratio_list[i], float) and not isinstance(filament_flow_ratio_list[i], int):
+                    if len(filament_flow_ratio_list) > LOGICAL_EXTRUDER_NUM:
                         raise gcmd.error("[print_task_config] Invalid FILAMENT_FLOW_RATIO")
-                    if filament_flow_ratio_list[i] <= 0:
-                        raise gcmd.error("[print_task_config] Invalid FILAMENT_FLOW_RATIO")
-                    tmp_print_task_config_2['filament_flow_ratio'][i] = float(filament_flow_ratio_list[i])
 
-            if filament_max_vol_speed is not None:
-                filament_max_vol_speed_list = None
-                try:
+                    for i in range(len(filament_flow_ratio_list)):
+                        if not isinstance(filament_flow_ratio_list[i], float) and not isinstance(filament_flow_ratio_list[i], int):
+                            raise gcmd.error("[print_task_config] Invalid FILAMENT_FLOW_RATIO")
+                        if filament_flow_ratio_list[i] <= 0.001:
+                            raise gcmd.error("[print_task_config] Invalid FILAMENT_FLOW_RATIO")
+                        tmp_print_task_config_2['filament_flow_ratio'][i] = float(filament_flow_ratio_list[i])
+            except Exception as e:
+                logging.exception(e)
+                tmp_print_task_config_2['filament_flow_ratio'] = [1.0 for i in range(LOGICAL_EXTRUDER_NUM)]
+
+            nozzle_volume_index_standard = 0
+            nozzle_volume_index_high_flow = 1
+            try:
+                if process_flow_support is not None:
+                    process_flow_support_list = self._parse_str_to_list(process_flow_support)
+                    if len(process_flow_support_list) >= 2 and process_flow_support_list[0] == 'high_flow' and \
+                            process_flow_support_list[1] == 'standard':
+                        nozzle_volume_index_standard = 1
+                        nozzle_volume_index_high_flow = 0
+            except Exception as e:
+                logging.exception(e)
+
+            tmp_print_task_config_2['outer_wall_accel'] = 5000
+            tmp_print_task_config_2['outer_wall_accel_hf'] = 5000
+            try:
+                if outer_wall_accel_list is not None:
+                    outer_wall_accel_list_list = self._parse_str_to_list(outer_wall_accel_list)
+                    if len(outer_wall_accel_list_list) == 1:
+                        tmp_print_task_config_2['outer_wall_accel'] = float(outer_wall_accel_list_list[0])
+                    elif len(outer_wall_accel_list_list) == 2:
+                        tmp_print_task_config_2['outer_wall_accel'] = float(outer_wall_accel_list_list[nozzle_volume_index_standard])
+                        tmp_print_task_config_2['outer_wall_accel_hf'] = float(outer_wall_accel_list_list[nozzle_volume_index_high_flow])
+            except Exception as e:
+                logging.exception(e)
+                tmp_print_task_config_2['outer_wall_accel'] = 5000
+                tmp_print_task_config_2['outer_wall_accel_hf'] = 5000
+
+            tmp_print_task_config_2['outer_wall_speed'] = 200
+            tmp_print_task_config_2['outer_wall_speed_hf'] = 200
+            try:
+                if outer_wall_speed_list is not None:
+                    outer_wall_speed_list_list = self._parse_str_to_list(outer_wall_speed_list)
+                    if len(outer_wall_speed_list_list) == 1:
+                        tmp_print_task_config_2['outer_wall_speed'] = float(outer_wall_speed_list_list[0])
+                    elif len(outer_wall_speed_list_list) == 2:
+                        tmp_print_task_config_2['outer_wall_speed'] = float(outer_wall_speed_list_list[nozzle_volume_index_standard])
+                        tmp_print_task_config_2['outer_wall_speed_hf'] = float(outer_wall_speed_list_list[nozzle_volume_index_high_flow])
+            except Exception as e:
+                logging.exception(e)
+                tmp_print_task_config_2['outer_wall_speed'] = 200
+                tmp_print_task_config_2['outer_wall_speed_hf'] = 200
+
+            try:
+                if filament_max_vol_speed is not None:
                     filament_max_vol_speed_list = self._parse_str_to_list(filament_max_vol_speed)
-                except:
-                    raise gcmd.error("[print_task_config] Invalid FILAMENT_MAX_VOL_SPEED")
 
-                if len(filament_max_vol_speed_list) > LOGICAL_EXTRUDER_NUM:
-                    raise gcmd.error("[print_task_config] Invalid FILAMENT_MAX_VOL_SPEED")
+                    if len(filament_max_vol_speed_list) > LOGICAL_EXTRUDER_NUM:
+                        raise gcmd.error("[print_task_config] Invalid FILAMENT_MAX_VOLUMETRIC_SPEED")
 
-                for i in range(len(filament_max_vol_speed_list)):
-                    if not isinstance(filament_max_vol_speed_list[i], float) and not isinstance(filament_max_vol_speed_list[i], int):
-                        raise gcmd.error("[print_task_config] Invalid FILAMENT_MAX_VOL_SPEED")
-                    tmp_print_task_config_2['filament_max_vol_speed'][i] = float(filament_max_vol_speed_list[i])
+                    for i in range(len(filament_max_vol_speed_list)):
+                        if not isinstance(filament_max_vol_speed_list[i], float) and not isinstance(filament_max_vol_speed_list[i], int):
+                            raise gcmd.error("[print_task_config] Invalid FILAMENT_MAX_VOLUMETRIC_SPEED")
+                        tmp_print_task_config_2['filament_max_vol_speed'][i] = float(filament_max_vol_speed_list[i])
+            except Exception as e:
+                logging.exception(e)
+                tmp_print_task_config_2['filament_max_vol_speed'] = [0 for i in range(LOGICAL_EXTRUDER_NUM)]
 
-            if filament_used_g is not None:
-                filament_used_g_list = None
-                try:
+            try:
+                if filament_volume_type is not None:
+                    filament_volume_type_list = None
+                    try:
+                        filament_volume_type_list = self._parse_str_to_list(filament_volume_type)
+                    except:
+                        raise gcmd.error("[print_task_config] Invalid FILAMENT_VOLUME_TYPE")
+                    if len(filament_volume_type_list) > LOGICAL_EXTRUDER_NUM:
+                        raise gcmd.error("[print_task_config] Invalid FILAMENT_VOLUME_TYPE")
+                    for i in range(len(filament_volume_type_list)):
+                        if not isinstance(filament_volume_type_list[i], str):
+                            raise gcmd.error("[print_task_config] Invalid FILAMENT_VOLUME_TYPE")
+                        tmp_print_task_config_2['filament_volume_type'][i] = filament_volume_type_list[i]
+            except Exception as e:
+                logging.exception(e)
+                tmp_print_task_config_2['filament_volume_type'] = ['standard' for i in range(LOGICAL_EXTRUDER_NUM)]
+
+            try:
+                if filament_used_g is not None:
                     filament_used_g_list = self._parse_str_to_list(filament_used_g)
-                except:
-                    raise gcmd.error("[print_task_config] Invalid FILAMENT_USED_G")
 
-                if len(filament_used_g_list) > LOGICAL_EXTRUDER_NUM:
-                    raise gcmd.error("[print_task_config] Invalid FILAMENT_USED_G")
-
-                for i in range(len(filament_used_g_list)):
-                    if not isinstance(filament_used_g_list[i], float) and not isinstance(filament_used_g_list[i], int):
+                    if len(filament_used_g_list) > LOGICAL_EXTRUDER_NUM:
                         raise gcmd.error("[print_task_config] Invalid FILAMENT_USED_G")
-                    tmp_print_task_config_2['filament_used_g'][i] = float(filament_used_g_list[i])
 
-            if filament_used_mm is not None:
-                filament_used_mm_list = None
-                try:
+                    for i in range(len(filament_used_g_list)):
+                        if not isinstance(filament_used_g_list[i], float) and not isinstance(filament_used_g_list[i], int):
+                            raise gcmd.error("[print_task_config] Invalid FILAMENT_USED_G")
+                        tmp_print_task_config_2['filament_used_g'][i] = float(filament_used_g_list[i])
+            except Exception as e:
+                logging.exception(e)
+                tmp_print_task_config_2['filament_used_g'] = [0 for i in range(LOGICAL_EXTRUDER_NUM)]
+
+            try:
+                if filament_used_mm is not None:
                     filament_used_mm_list = self._parse_str_to_list(filament_used_mm)
-                except:
-                    raise gcmd.error("[print_task_config] Invalid FILAMENT_USED_MM")
 
-                if len(filament_used_mm_list) > LOGICAL_EXTRUDER_NUM:
-                    raise gcmd.error("[print_task_config] Invalid FILAMENT_USED_MM")
-
-                for i in range(len(filament_used_mm_list)):
-                    if not isinstance(filament_used_mm_list[i], float) and not isinstance(filament_used_mm_list[i], int):
+                    if len(filament_used_mm_list) > LOGICAL_EXTRUDER_NUM:
                         raise gcmd.error("[print_task_config] Invalid FILAMENT_USED_MM")
-                    tmp_print_task_config_2['filament_used_mm'][i] = float(filament_used_mm_list[i])
 
+                    for i in range(len(filament_used_mm_list)):
+                        if not isinstance(filament_used_mm_list[i], float) and not isinstance(filament_used_mm_list[i], int):
+                            raise gcmd.error("[print_task_config] Invalid FILAMENT_USED_MM")
+                        tmp_print_task_config_2['filament_used_mm'][i] = float(filament_used_mm_list[i])
+            except Exception as e:
+                logging.exception(e)
+                tmp_print_task_config_2['filament_used_mm'] = [0 for i in range(LOGICAL_EXTRUDER_NUM)]
+
+            ########## check parameters ###########
             # extruders_used
             for i in range(LOGICAL_EXTRUDER_NUM):
                 if tmp_print_task_config_2['filament_used_g'][i] > 0.0001 or tmp_print_task_config_2['filament_used_mm'][i] > 0.0001:
@@ -1276,7 +1402,30 @@ class PrintTaskConfig:
                         if abs(tmp_print_task_config_2['nozzle_diameter'][0] - actual_nozzle_diameter[i]) > 0.001:
                             exception_code = 14
                             raise gcmd.error(f"[print_task_config] nozzle diameter mismatch:" +
-                                                f"f_{tmp_print_task_config_2['nozzle_diameter'][0]} != e_{actual_nozzle_diameter[i]}")
+                                                f"f{i}_{tmp_print_task_config_2['nozzle_diameter'][0]} != e{i}_{actual_nozzle_diameter[i]}")
+
+            # check filament volume type
+            if filament_volume_type is not None:
+                for i in range(min(LOGICAL_EXTRUDER_NUM, len(tmp_print_task_config_2['filament_volume_type']))):
+                    if tmp_print_task_config_2['filament_volume_type'][i] == None:
+                        continue
+                    if tmp_print_task_config_2['filament_used_g'][i] < 0.0001 and tmp_print_task_config_2['filament_used_mm'][i] < 0.0001:
+                        continue
+                    map_e = tmp_print_task_config['extruder_map_table'][i]
+                    if tmp_print_task_config['extruders_used'][map_e]:
+                        if tmp_print_task_config_2['filament_volume_type'][i] != actual_nozzle_volume_type[map_e]:
+                            exception_code = 19
+                            raise gcmd.error("[print_task_config] nozzle volume type mismatch:" +
+                                f"f{i}_{tmp_print_task_config_2['filament_volume_type'][i]} != " +
+                                f"e{map_e}_{actual_nozzle_volume_type[map_e]}")
+            else:
+                if slicer == SNAPMAKER_OFFICIAL_ORCASLICER:
+                    for i in range(PHYSICAL_EXTRUDER_NUM):
+                        if tmp_print_task_config['extruders_used'][i]:
+                            if actual_nozzle_volume_type[i] != 'standard':
+                                exception_code = 19
+                                raise gcmd.error("[print_task_config] nozzle volume type mismatch:" +
+                                    f"f_standard != e{i}_{actual_nozzle_volume_type[i]}")
 
             # check flow calibration
             if tmp_print_task_config['flow_calibrate']:
@@ -1285,11 +1434,12 @@ class PrintTaskConfig:
                         continue
                     if tmp_print_task_config['flow_calib_extruders'][i] == False:
                         continue
-                    is_allow = self.filament_param_obj.is_allow_to_flow_calibrate(
+                    is_allow = self.filament_param_obj.is_allow_to_print(
                             tmp_print_task_config['filament_vendor'][i],
                             tmp_print_task_config['filament_type'][i],
                             tmp_print_task_config['filament_sub_type'][i],
-                            actual_nozzle_diameter[i])
+                            actual_nozzle_diameter[i],
+                            actual_nozzle_volume_type[i])
                     if not is_allow:
                         exception_code = 18
                         raise gcmd.error("[flow_calibrate] %.1f nozzle, %s %s %s not allow to calibrate!" % (

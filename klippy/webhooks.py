@@ -321,6 +321,7 @@ class WebHooks:
         self._endpoints = {"list_endpoints": self._handle_list_endpoints}
         self._remote_methods = {}
         self._mux_endpoints = {}
+        self.status_helper = None
         self.register_endpoint("info", self._handle_info_request)
         self.register_endpoint("emergency_stop", self._handle_estop_request)
         self.register_endpoint("register_remote_method",
@@ -435,6 +436,12 @@ class WebHooks:
                 "No active connections for method '%s'" % (method))
         self._remote_methods[method] = valid_conns
 
+    def send_status(self, *obj_names):
+        # Force an immediate full status push to all subscribed clients.
+        # Pass object names (e.g. 'print_stats') to refresh only those
+        # objects; omit them to refresh everything. Main thread only.
+        self.status_helper.send_status(*obj_names)
+
 class GCodeHelper:
     def __init__(self, printer):
         self.printer = printer
@@ -486,6 +493,7 @@ class QueryStatusHelper:
         self.last_query = {}
         # Register webhooks
         webhooks = printer.lookup_object('webhooks')
+        webhooks.status_helper = self
         webhooks.register_endpoint("objects/list", self._handle_list)
         webhooks.register_endpoint("objects/query", self._handle_query)
         webhooks.register_endpoint("objects/subscribe", self._handle_subscribe)
@@ -553,6 +561,25 @@ class QueryStatusHelper:
             self.query_timer = None
             return reactor.NEVER
         return eventtime + SUBSCRIPTION_REFRESH_TIME
+    def send_status(self, *obj_names):
+        # Force a full status push to all subscribed clients. With object
+        # names only those objects are fully resent while the rest keep
+        # their normal incremental diffing; without names the whole
+        # last_query cache is cleared so everything is resent. The query
+        # timer is then scheduled to run immediately. Safe at any time on
+        # the main (reactor) thread. Data is only delivered to clients
+        # that have subscribed to the object(s). No-op if not subscribed.
+        if obj_names:
+            for name in obj_names:
+                self.last_query.pop(name, None)
+        else:
+            self.last_query = {}
+        reactor = self.printer.get_reactor()
+        if self.query_timer is None:
+            self.query_timer = reactor.register_timer(
+                self._do_query, reactor.NOW)
+        else:
+            reactor.update_timer(self.query_timer, reactor.NOW)
     def _handle_query(self, web_request, is_subscribe=False):
         objects = web_request.get_dict('objects')
         # Validate subscription format

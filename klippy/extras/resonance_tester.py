@@ -147,6 +147,8 @@ class ResonanceTester:
         else:
             self.debug = False
         self.fixed_shaper = config.get('fixed_shaper', 'mzv')
+        self.accel_chip_auto_identify = config.getboolean(
+            'accel_chip_auto_identify', False)
 
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command("MEASURE_AXES_NOISE",
@@ -162,11 +164,23 @@ class ResonanceTester:
                                     self.cmd_SM_FAST_SHAPER_CALIBRATE,
                                     desc=self.cmd_SM_FAST_SHAPER_CALIBRATE_help)
         self.printer.register_event_handler("klippy:connect", self.connect)
+        self.printer.register_event_handler("klippy:ready", self._ready)
 
     def connect(self):
         self.accel_chips = [
                 (chip_axis, self.printer.lookup_object(chip_name))
                 for chip_axis, chip_name in self.accel_chip_names]
+
+    def _ready(self):
+        if self.accel_chip_auto_identify:
+            resolved = []
+            for chip_axis, chip in self.accel_chips:
+                identified = getattr(chip, 'sensor_identified', None)
+                if identified is not None:
+                    resolved.append((chip_axis, identified))
+                else:
+                    resolved.append((chip_axis, chip))
+            self.accel_chips = resolved
 
     def _run_test(self, gcmd, axes, helper, raw_name_suffix=None,
                   accel_chips=None, test_point=None):
@@ -329,6 +343,12 @@ class ResonanceTester:
             self.state = STATE_SHAPER_CALIBRATING
             if not self.check_homed():
                 self.gcode.run_script_from_command("G28\r\n")
+            else:
+                toolhead = self.printer.lookup_object('toolhead')
+                toolhead.wait_moves()
+                start_pos = list(toolhead.get_position())
+                if start_pos[1] > toolhead.get_extruder().y_idle_position:
+                    self.gcode.run_script_from_command("MOVE_TO_XY_IDLE_POSITION_EXTRUDER\r\n")
 
             self.gcode.run_script_from_command("T0 A0\r\n")
 

@@ -6,10 +6,17 @@ import copy
 import struct
 import errno
 import threading
+import random
+
+AERA_CALC_MODE_ORIGINAL                 = 0
+AERA_CALC_MODE_OS                       = 1
 
 # algorithm type
 ALGORITHM_TYPE_DICHOTOMY                = 'DICHOTOMY'
 ALGORITHM_TYPE_LINEAR_FITTING           = 'LINEAR_FITTING'
+ALGORITHM_TYPE_OS_ACCEL                 = 'OS_ACCEL'
+ALGORITHM_TYPE_OS_DECEL                 = 'OS_DECEL'
+ALGORITHM_TYPE_OS_ACCEL_DECEL           = 'OS_ACCEL_DECEL'
 
 # abort reason
 ABORT_REASON_CANCEL_BY_USER             = 'cancel_by_user'
@@ -49,7 +56,8 @@ class FlowCalcClient:
         return data
 
     @staticmethod
-    def _write_request(fd, pt, freq, accel_time, loop, slowv, fastv, drop1, drop2):
+    def _write_request(fd, pt, freq, accel_time, loop, slowv, fastv, drop1, drop2,
+                        calc_mode=0, calc_mode_params=None):
         """Write mixed-protocol request.
 
         total_length = len(header) + len(pt) + len(freq) + len(accel),
@@ -62,8 +70,18 @@ class FlowCalcClient:
         header = {
             'loop': loop, 'slowv': slowv, 'fastv': fastv,
             'drop1': drop1, 'drop2': drop2,
-            'pt_len': pt_len, 'freq_len': freq_len, 'accel_len': accel_len
+            'pt_len': pt_len, 'freq_len': freq_len, 'accel_len': accel_len,
+            'calc_mode': calc_mode,
         }
+        if calc_mode == AERA_CALC_MODE_OS:
+            try:
+                header['os_count'] = int(calc_mode_params['os_count'])
+            except Exception:
+                logging.error(f"Invalid calc_mode_params: {calc_mode_params}\r\n")
+                header['os_count'] = 5
+
+        logging.info(f"[flow_calibrator] Sending request: {header}")
+
         header_bytes = json.dumps(header).encode('utf-8')
 
         pt_bytes = np.array(pt, dtype='<f8').tobytes()
@@ -87,7 +105,8 @@ class FlowCalcClient:
         data = FlowCalcClient._read_exact(fd, length)
         return json.loads(data.decode('utf-8'))
 
-    def calc_flow_factor(self, pt, freq, accel_time, loop, slowv, fastv, drop1, drop2):
+    def calc_flow_factor(self, pt, freq, accel_time, loop, slowv, fastv,
+                          drop1, drop2, calc_mode=0, calc_mode_params=None):
         """Send calculation request via pipe and return result."""
         result = [None]
         error = [None]
@@ -96,7 +115,8 @@ class FlowCalcClient:
             try:
                 req_fd = os.open(self.REQ_PIPE, os.O_WRONLY)
                 self._write_request(req_fd, pt, freq, accel_time,
-                                    loop, slowv, fastv, drop1, drop2)
+                                    loop, slowv, fastv, drop1, drop2,
+                                    calc_mode, calc_mode_params)
                 os.close(req_fd)
 
                 resp_fd = os.open(self.RESP_PIPE, os.O_RDONLY)
@@ -116,9 +136,15 @@ class FlowCalcClient:
             raise FlowCalcError(str(error[0]))
 
         response = result[0]
+        logging.info(f"[flow_calibrator] Response: {response}\r\n")
         if response.get('status') != 'ok':
             raise FlowCalcError(response.get('message', 'Unknown error from flow calculator'))
-        return float(response['result'])
+
+        if calc_mode == AERA_CALC_MODE_OS:
+            return (float(response['decel_result']),
+                    float(response['accel_result']))
+        else:
+            return float(response['result'])
 
 DEFAULT_ENV = {
     'k_min': 0.005,
@@ -195,6 +221,7 @@ class AccelTimeQueryHelper:
         3 -> decceleration start
         4 -> cruise start of slow speed, 0.8mm/s
         """
+        samples = list(self.samples or self.get_samples())
         def write_impl():
             try:
                 # Try to re-nice writing process
@@ -203,20 +230,23 @@ class AccelTimeQueryHelper:
                 pass
             f = open(filename, 'w+')
             f.write("time, duration, start speed, accel\n")
-            samples = self.samples or self.get_samples()
             for t, d, sv, a in samples:
                 if slowv is None and fastv is None:
                     f.write("%.4f,%.4f,%.4f,%.4f\n" % (t,d,sv,a))
                     continue
-
-                if slowv != None and fastv != None:
-                    if sv != slowv and sv != fastv:
+                if slowv is not None and fastv is not None:
+                    if abs(sv - slowv) >= 0.00001 and abs(sv - fastv) >= 0.00001:
                         continue
                 f.write("%.4f,%.4f,%.4f,%.4f\n" % (t,d,sv,a))
             f.close()
         write_proc = multiprocessing.Process(target=write_impl)
         write_proc.daemon = True
         write_proc.start()
+        reactor = self._printer.get_reactor()
+        eventtime = reactor.monotonic()
+        while write_proc.is_alive():
+            eventtime = reactor.pause(eventtime + .05)
+        write_proc.join()
 
 class FlowCalibrator(object):
     def __init__(self, config) -> None:
@@ -417,11 +447,21 @@ class FlowCalibrator(object):
         self._end_of_measure()
 
         self._flow_calc_client.check_server()
-        area = self._flow_calc_client.calc_flow_factor(
-            freq_pt, freq, accel_ts,
-            params['loop'], params['slow_vel'], params['fast_vel'], 1, 1)
+        if params['calc_mode'] == AERA_CALC_MODE_OS:
+            area_result = self._flow_calc_client.calc_flow_factor(
+                freq_pt, freq, accel_ts,
+                params['loop'], params['slow_vel'], params['fast_vel'], 1, 1,
+                calc_mode=AERA_CALC_MODE_OS,
+                calc_mode_params={'os_count': params['os_sample_count']})
+            logging.info("area decel: %.3f, accel: %.3f", area_result[0], area_result[1])
+        else:
+            area_result = self._flow_calc_client.calc_flow_factor(
+                freq_pt, freq, accel_ts,
+                params['loop'], params['slow_vel'], params['fast_vel'], 1, 1)
+            logging.info("area: %.3f", area_result)
+
         if extruder_dir is None:
-            return area
+            return area_result
 
         # Write data to file
         if not extruder_dir.exists():
@@ -433,7 +473,7 @@ class FlowCalibrator(object):
         # waiting write process ending
         logging.info("Writing raw accel ts to %s, and freq to %s file"
                             % (accel_filename, freq_filename))
-        return area
+        return area_result
 
     def _get_next_k(self, k_left, k_right, area_left, area_right):
         area_sum = area_left + area_right
@@ -473,6 +513,64 @@ class FlowCalibrator(object):
 
         return zero_crossing_k
 
+    def _calculate_os_linear_fitting_zero_crossing(self,
+                                                    decel_data_list=None,
+                                                    accel_data_list=None,
+                                                    default_k=0.02):
+        def _fit_one(data_list, expected_slope_sign=0):
+            if len(data_list) < 2:
+                raise ValueError("[flow_calibrate] measure_data_list not enough data")
+
+            sorted_pts = sorted(data_list, key=lambda p: p[0])
+            ks = np.array([p[0] for p in sorted_pts])
+            areas = np.array([p[1] for p in sorted_pts])
+
+            if float(np.max(areas) - np.min(areas)) < 500.0:
+                raise ValueError("[flow_calibrate] the linear characteristics are not obvious")
+
+            a, b = np.polyfit(ks, areas, 1)
+            if abs(a) < 1e-12:
+                return ks[np.argmin(np.abs(areas))]
+
+            if expected_slope_sign != 0:
+                if (expected_slope_sign > 0 and a <= 0.0) or \
+                    (expected_slope_sign < 0 and a >= 0.0):
+                    raise ValueError(
+                        f"Slope sign mismatch: expected {'+' if expected_slope_sign > 0 else '-'}"
+                        f" but got a={a:.6f}")
+
+            k_zero = -b / a
+            k_lo, k_hi = float(np.min(ks)), float(np.max(ks))
+            margin = (k_hi - k_lo) * 0.2
+            if k_zero < k_lo - margin:
+                return k_lo
+            if k_zero > k_hi + margin:
+                return k_hi
+            return k_zero
+
+        k_decel = default_k
+        k_accel = default_k
+
+        try:
+            if decel_data_list is None:
+                raise ValueError("[flow_calibrate] decel_data_list is None, using default")
+            k_decel = _fit_one(decel_data_list, expected_slope_sign=-1)
+
+        except Exception as e:
+            logging.error("[flow_calibrate] calc error: %s" % str(e))
+            k_decel = default_k
+
+        try:
+            if accel_data_list is None:
+                raise ValueError("[flow_calibrate] accel_data_list is None, using default")
+            k_accel = _fit_one(accel_data_list, expected_slope_sign=1)
+
+        except Exception as e:
+            logging.error("[flow_calibrate] calc error: %s" % str(e))
+            k_accel = default_k
+
+        return k_decel, k_accel
+
     def _reset_pressure_advance(self, extruder_index):
         filament_parameters = self._printer.lookup_object('filament_parameters', None)
         print_task_config = self._printer.lookup_object('print_task_config', None)
@@ -491,7 +589,8 @@ class FlowCalibrator(object):
                 status['filament_vendor'][extruder_index],
                 status['filament_type'][extruder_index],
                 status['filament_sub_type'][extruder_index],
-                extruder.nozzle_diameter)
+                extruder.nozzle_diameter,
+                extruder.nozzle_volume_type)
 
         self._set_pressure_advance(extruder, default_k)
         need_save = False
@@ -526,51 +625,40 @@ class FlowCalibrator(object):
         self._apply_calibrate_k(extruder_index)
 
     cmd_FLOW_CALIBRATE_help = """start calibrate the factor for pressure advance\n
-    TARGET  -> target extruder name, must specify it
-    TEMP    -> temperature for test, default 250
-    MIN     -> min K, default 0.008
-    MAX     -> max K, default 0.052
-    STARTV  -> extrude velocity in prepare phase, default 4mm/s
-    STARTD  -> extrude distance in prepare phase, default 20mm
-    SLOWV   -> slow velocity in normal phase, default 0.8mm/s
-    SLOWD   -> extrude distance in slow velocity, default 0.8mm
-    FASTV   -> fast velocity in normal phase, default 8mm/s
-    FASTD   -> extrude distance in fast velocity, default 8mm/s
-    ACCEL   -> acceleration for extruding, default 200mm/s^2
-    LOOP    -> extrude count for one loop, default 14 round
+    TARGET      -> target extruder name, must specify it
+    TEMP        -> temperature for test
+    MIN         -> min K
+    MAX         -> max K
+    STARTV      -> extrude velocity in prepare phase
+    STARTD      -> extrude distance in prepare phase
+    SLOWV       -> slow velocity in normal phase
+    SLOWD       -> extrude distance in slow velocity
+    FASTV       -> fast velocity in normal phase
+    FASTD       -> extrude distance in fast velocity
+    ACCEL       -> acceleration for extruding
+    LOOP        -> extrude count for one loop
+    ALGORITHM   -> calc algorithm
     """
     def cmd_FLOW_CALIBRATE(self, gcmd):
         self._abort_calibration = False
         self._abort_reason = None
         machine_state_manager = None
 
+        ######### check whether calibration is allowed or required
         if self._task_config is None or self._filament_parameters is None:
             raise gcmd.error("[flow_calibrate] cannot get necessary objects")
 
-        print_stats = self._printer.lookup_object('print_stats', None)
-        if print_stats and print_stats.state in ['printing', 'paused']:
-            if not self._task_config.print_task_config['flow_calibrate']:
-                gcmd.respond_info("[flow_calibrate] flow calibration is disabled")
-                return
-
         extruder = self._toolhead.get_extruder()
-        extruder_index = self._toolhead.get_extruder().extruder_index
+        extruder_index = extruder.extruder_index
+        nozzle_diameter = extruder.nozzle_diameter
+        nozzle_volume_type = extruder.nozzle_volume_type
         task_config_status = self._task_config.get_status()
-
-        if print_stats and print_stats.state in ['printing', 'paused']:
-            if self._calibrated_in_printing[extruder.get_name()]:
-                gcmd.respond_info(f'[flow_calibrate]flow calibration of {extruder.get_name()} has been finished')
-                return
-
-        if task_config_status['filament_type'][extruder_index] == 'NONE':
-            raise gcmd.error(
-                    message = "[flow_calibrate] not edit filament info!",
-                    action = 'pause',
-                    id = 523,
-                    index = extruder_index,
-                    code = 39,
-                    oneshot = 1,
-                    level = 2)
+        filament_parameters = self._filament_parameters.get_filament_parameters(
+                                            task_config_status['filament_vendor'][extruder_index],
+                                            task_config_status['filament_type'][extruder_index],
+                                            task_config_status['filament_sub_type'][extruder_index],
+                                            nozzle_diameter,
+                                            nozzle_volume_type)
 
         runout_sensor = self._printer.lookup_object(f'filament_motion_sensor e{extruder_index}_filament', None)
         if runout_sensor is not None and runout_sensor.get_status(0)['enabled'] == True and \
@@ -584,13 +672,34 @@ class FlowCalibrator(object):
                     oneshot = 0,
                     level = 2)
 
-        force_flag = gcmd.get_int('FORCE', False)
+        force_flag = gcmd.get_int('FORCE', 0)
+        print_stats = self._printer.lookup_object('print_stats', None)
         if force_flag == 0:
-            is_allow_flag = self._filament_parameters.is_allow_to_flow_calibrate(
+            if print_stats and print_stats.state in ['printing', 'paused']:
+                if not self._task_config.print_task_config['flow_calibrate']:
+                    gcmd.respond_info("[flow_calibrate] flow calibration is disabled")
+                    return
+
+                if self._calibrated_in_printing[extruder.get_name()]:
+                    gcmd.respond_info(f'[flow_calibrate]flow calibration of {extruder.get_name()} has been finished')
+                    return
+
+            if task_config_status['filament_type'][extruder_index] == 'NONE':
+                raise gcmd.error(
+                        message = "[flow_calibrate] not edit filament info!",
+                        action = 'pause',
+                        id = 523,
+                        index = extruder_index,
+                        code = 39,
+                        oneshot = 1,
+                        level = 2)
+
+            is_allow_flag = self._filament_parameters.is_allow_to_print(
                                             task_config_status['filament_vendor'][extruder_index],
                                             task_config_status['filament_type'][extruder_index],
                                             task_config_status['filament_sub_type'][extruder_index],
-                                            extruder.nozzle_diameter)
+                                            nozzle_diameter,
+                                            nozzle_volume_type)
             if not is_allow_flag:
                 raise gcmd.error(
                     message = "[flow_calibrate] not allow to calibrate!",
@@ -601,6 +710,7 @@ class FlowCalibrator(object):
                     oneshot = 1,
                     level = 3)
 
+        ######### parse and apply parameters
         flow_temp = 250
         flow_accel = self._env['accel']
         flow_slow_v = self._env['slow_vel']
@@ -609,100 +719,122 @@ class FlowCalibrator(object):
         flow_k_min = self._env['k_min']
         flow_k_max = self._env['k_max']
         flow_k = DEFAULT_K[extruder.get_name()]
+        max_flow_k = 1.0
 
-        use_builtin_parameters = False
+        # built-in filament parameters
         try:
-            flow_calibrate_parameters = self._filament_parameters.get_flow_calibrate_parameters(
-                                            task_config_status['filament_vendor'][extruder_index],
-                                            task_config_status['filament_type'][extruder_index],
-                                            task_config_status['filament_sub_type'][extruder_index],
-                                            extruder.nozzle_diameter)
-            builtin_flow_temp = flow_calibrate_parameters.get('temp')
-            builtin_flow_accel = flow_calibrate_parameters.get('accel')
-            builtin_flow_slow_v = flow_calibrate_parameters.get('slow_v')
-            builtin_flow_fast_v = flow_calibrate_parameters.get('fast_v')
-            builtin_flow_k_min = flow_calibrate_parameters.get('k_min')
-            builtin_flow_k_max = flow_calibrate_parameters.get('k_max')
-            builtin_flow_k = flow_calibrate_parameters.get('k')
+            builtin_flow_temp = filament_parameters['print_temp']
+            builtin_flow_accel = filament_parameters['accel']
+            builtin_flow_slow_v = filament_parameters['slow_v']
+            builtin_flow_fast_v = filament_parameters['fast_v']
+            builtin_flow_k_min = filament_parameters['flow_k_min']
+            builtin_flow_k_max = filament_parameters['flow_k_max']
+            builtin_flow_k = filament_parameters['flow_k']
+            builtin_max_flow_k = filament_parameters['max_flow_k']
 
-            use_builtin_parameters = True
+            flow_temp = builtin_flow_temp
+            flow_accel = builtin_flow_accel
+            flow_slow_v = builtin_flow_slow_v
+            flow_fast_v = builtin_flow_fast_v
+            flow_k_min = builtin_flow_k_min
+            flow_k_max = builtin_flow_k_max
+            flow_k = builtin_flow_k
+            max_flow_k = builtin_max_flow_k
 
         except:
-            use_builtin_parameters = False
+            logging.error(f'[flow_calibrate] cannot get built-in filament parameters for {extruder.get_name()}')
 
-        finally:
-            if use_builtin_parameters:
-                flow_temp = builtin_flow_temp
-                flow_accel = builtin_flow_accel
-                flow_slow_v = builtin_flow_slow_v
-                flow_fast_v = builtin_flow_fast_v
-                flow_k_min = builtin_flow_k_min
-                flow_k_max = builtin_flow_k_max
-                flow_k = builtin_flow_k
-
-        use_gcode_parameters = False
-        try:
-            gcode_parameters = copy.deepcopy(self._task_config.print_task_config_2)
-            filament_index = None
-            for i in range(len(self._task_config.print_task_config['extruder_map_table'])):
-                if self._task_config.print_task_config['extruder_map_table'][i] == extruder_index and \
-                    self._task_config.print_task_config['extruders_used'][i] == True:
+        # gcode file parameters
+        if print_stats and print_stats.state in ['printing', 'paused']:
+            try:
+                gcode_parameters = copy.deepcopy(self._task_config.print_task_config_2)
+                filament_index = None
+                for i in range(len(task_config_status['extruder_map_table'])):
+                    if task_config_status['extruder_map_table'][i] != extruder_index:
+                        continue
+                    if gcode_parameters['filament_used_g'][i] < 0.00001 and gcode_parameters['filament_used_mm'][i] < 0.00001:
+                        continue
                     filament_index = i
                     break
-            if filament_index is None:
-                raise
 
-            gcode_max_vol_speed = self._task_config.print_task_config_2['filament_max_vol_speed'][filament_index]
-            gcode_flow_ratio = self._task_config.print_task_config_2['filament_flow_ratio'][filament_index]
-            gcode_temp = self._task_config.print_task_config_2['nozzle_temp'][filament_index]
+                if filament_index is None:
+                    raise
 
-            if gcode_parameters['line_width'] < 0.00001 or \
-                    gcode_parameters['layer_height'] < 0.00001 or gcode_parameters['layer_height'] > extruder.nozzle_diameter or \
-                    gcode_max_vol_speed < 0.00001 or \
-                    gcode_flow_ratio < 0.00001 or \
-                    gcode_temp < extruder.heater.min_extrude_temp or gcode_temp > extruder.heater.max_temp:
-                raise
+                gcode_max_vol_speed = gcode_parameters['filament_max_vol_speed'][filament_index]
+                gcode_flow_ratio = gcode_parameters['filament_flow_ratio'][filament_index]
+                gcode_temp = gcode_parameters['nozzle_temp'][filament_index]
+                gcode_print_accel = gcode_parameters['outer_wall_accel']
+                if gcode_parameters['filament_volume_type'][filament_index] == 'high_flow' or \
+                        nozzle_volume_type == 'high_flow':
+                    gcode_print_accel = gcode_parameters['outer_wall_accel_hf']
 
-            area_line = gcode_parameters['layer_height'] * (gcode_parameters['line_width'] - gcode_parameters['layer_height'] * ( \
-                            1.0 - 3.1415926 / 4.0))
-            area_filament = 0.875 * 0.875 * 3.1415926
+                if gcode_parameters['line_width'] < 0.00001 or gcode_parameters['line_width'] > nozzle_diameter * 2 or \
+                        gcode_parameters['layer_height'] < 0.00001 or gcode_parameters['layer_height'] > nozzle_diameter * 1.1 or \
+                        gcode_max_vol_speed < 0.00001 or gcode_max_vol_speed > 1000.0 or \
+                        gcode_print_accel < 0.00001 or gcode_print_accel > 100000.0 or \
+                        gcode_flow_ratio < 0.00001 or gcode_flow_ratio > 5 or \
+                        gcode_temp < extruder.heater.min_extrude_temp or gcode_temp > extruder.heater.max_temp:
+                    raise
 
-            gcode_fast_v = gcode_max_vol_speed / area_filament
-            gcode_fast_v = min(gcode_fast_v, extruder.max_e_velocity)
-            gcode_slow_v = area_line * 20 / area_filament
-            gcode_slow_v = max(gcode_slow_v, 0.17)
-            gcode_accel = extruder.max_e_accel * area_line / area_filament * gcode_flow_ratio
-            gcode_accel = min(gcode_accel, extruder.max_e_accel)
-            if gcode_fast_v <= gcode_slow_v:
-                raise
+                area_line = gcode_parameters['layer_height'] * (gcode_parameters['line_width'] - gcode_parameters['layer_height'] * ( \
+                                1.0 - 3.1415926 / 4.0))
+                area_filament = 0.875 * 0.875 * 3.1415926
 
-            use_gcode_parameters = True
-        except:
-            use_gcode_parameters = False
+                gcode_fast_v = gcode_max_vol_speed / area_filament
+                gcode_fast_v = min(gcode_fast_v, extruder.max_e_velocity)
+                gcode_slow_v = area_line * 20 / area_filament
+                gcode_slow_v = max(gcode_slow_v, 0.16)
+                gcode_accel = gcode_print_accel * area_line / area_filament * gcode_flow_ratio
+                gcode_accel = min(gcode_accel, extruder.max_e_accel)
+                if gcode_fast_v <= gcode_slow_v:
+                    raise
 
-        finally:
-            if use_gcode_parameters:
                 flow_temp = gcode_temp
                 flow_accel = gcode_accel
                 flow_slow_v = gcode_slow_v
                 flow_fast_v = gcode_fast_v
+                logging.info(f"[flow_calibrate] using gcode parameters for {extruder.get_name()}")
 
+            except:
+                logging.error(f'[flow_calibrate] gcode parameters not valid for {extruder.get_name()}')
+
+        # Gcode parameter takes precedence
         temperature = gcmd.get_int('TEMP', flow_temp, minval=extruder.heater.min_extrude_temp, maxval=extruder.heater.max_temp)
         fast_v = gcmd.get_float('FASTV', flow_fast_v, minval=0)
         slow_v = gcmd.get_float('SLOWV', flow_slow_v, minval=0)
-        accel = gcmd.get_float('ACCEL', flow_accel, minval=0)
-        loop = gcmd.get_int('LOOP', flow_loop, minval=0)
-        algorithm = gcmd.get('ALGORITHM', ALGORITHM_TYPE_LINEAR_FITTING)
         start_vel = gcmd.get_float('STARTV', (fast_v + slow_v) / 2.0, minval=0)
+        accel = gcmd.get_float('ACCEL', flow_accel, minval=5)
+        loop = gcmd.get_int('LOOP', flow_loop, minval=0)
+        algorithm = gcmd.get('ALGORITHM', None)
+        os_count = gcmd.get_int('OS_COUNT', 20, minval=1, maxval=100)
+        if algorithm is None:
+            if nozzle_volume_type == 'high_flow':
+                algorithm = ALGORITHM_TYPE_OS_DECEL
+            else:
+                algorithm = ALGORITHM_TYPE_LINEAR_FITTING
         k_min = gcmd.get_float('MIN', flow_k_min, minval=0, maxval=1.0)
         k_max = gcmd.get_float('MAX', flow_k_max, minval=0, maxval=1.0)
         flow_start_d = max(start_vel * 1, 3)
-        flow_slow_d = max(flow_slow_v * 1, 0.5)
-        flow_fast_d = max(flow_fast_v * 0.5, 0.8)
+        flow_slow_d = max(slow_v * 1, 0.5)
+        flow_fast_d = max(fast_v * 0.5, 0.8)
+        if algorithm in [ALGORITHM_TYPE_OS_ACCEL, ALGORITHM_TYPE_OS_DECEL, ALGORITHM_TYPE_OS_ACCEL_DECEL]:
+            _ramp_dist = (fast_v**2 - slow_v**2) / (2.0 * accel)
+            flow_slow_d = max(slow_v * 0.5 , 0.5)
+            flow_fast_d = max(fast_v * 0.5 + 2 * _ramp_dist, 0.8)
+
         start_dist = gcmd.get_float('STARTD', flow_start_d, minval=0)
         slow_dist = gcmd.get_float('SLOWD', flow_slow_d, minval=0)
         fast_dist = gcmd.get_float('FASTD', flow_fast_d, minval=0)
 
+        _area_algo_map = {
+            ALGORITHM_TYPE_OS_ACCEL:       (1, os_count),
+            ALGORITHM_TYPE_OS_DECEL:       (1, os_count),
+            ALGORITHM_TYPE_OS_ACCEL_DECEL: (1, os_count),
+        }
+        _algo_calc_mode, _algo_sample_count = _area_algo_map.get(
+            algorithm, (0, 0))
+
+        # parameters check
         if fast_v <= slow_v:
             raise gcmd.error("[flow_calibrate] FASTV should be greater than SLOWV\r\n")
         if k_min >= k_max:
@@ -711,7 +843,14 @@ class FlowCalibrator(object):
             raise gcmd.error("[flow_calibrate] STARTV should be between SLOWV and FASTV\r\n")
 
         filament_default_k = flow_k
+        filaments_max_flow_k = max_flow_k
+        if filament_parameters['is_soft'] != task_config_status['filament_soft'][extruder_index]:
+            if task_config_status['filament_soft'][extruder_index]:
+                filaments_max_flow_k = filament_parameters['soft_filaments_max_flow_k']
+            else:
+                filaments_max_flow_k = filament_parameters['hard_filaments_max_flow_k']
 
+        # apply parameters
         cali_params = {
             'k_min': k_min,
             'k_max': k_max,
@@ -723,7 +862,9 @@ class FlowCalibrator(object):
             'fast_vel': fast_v,
             'accel': accel,
             'loop': loop,
-            'temp': temperature
+            'temp': temperature,
+            'calc_mode': _algo_calc_mode,
+            'os_sample_count': _algo_sample_count
         }
 
         gcmd.respond_info("[flow_calibrate] filament: %s %s %s , calib_param: %s \r\n" % (
@@ -731,6 +872,7 @@ class FlowCalibrator(object):
                         task_config_status['filament_type'][extruder_index],
                         task_config_status['filament_sub_type'][extruder_index],
                         str(cali_params)))
+        gcmd.respond_info("[flow_calibrate] algorithm: %s \r\n" % (str(algorithm)))
 
         try:
             self._toolhead.wait_moves()
@@ -811,28 +953,6 @@ class FlowCalibrator(object):
                         self._abort_calibration = True
                         raise AbortCalibration(f'{self._abort_reason}')
 
-                    # if next_k > k_right:
-                    #     # next_k is to the right of k_right, adjust k_left and k_right
-                    #     gcmd.respond_info(f'next_k is to the right of k_right')
-                    #     k_left = k_right
-                    #     area_left = area_right
-                    #     k_right = next_k
-                    #     gcmd.respond_info(f'get new area_right')
-                    #     area_right = self._measure_k(extruder, inductance_coil, k_right, cali_params, extruder_dir)
-                    #     # update next_k
-                    #     next_k = round((k_right - k_left) / 2, 6)
-                    # elif next_k < k_left:
-                    #     # next_k is to the left of k_left, adjust k_left and k_right
-                    #     gcmd.respond_info(f'next_k is to the left of k_left')
-                    #     k_right = k_left
-                    #     area_right = area_left
-                    #     k_left = next_k
-                    #     # get new area_left
-                    #     gcmd.respond_info(f'get new area_left')
-                    #     area_left = self._measure_k(extruder, inductance_coil, k_left, cali_params, extruder_dir)
-                    #     # update next_k
-                    #     next_k = round((k_right - k_left) / 2, 6)
-
                     gcmd.respond_info(f'area_left[k{k_left:.5f}]: {area_left}, next k: {next_k:.5f}, area_right[k{k_right:.5f}]: {area_right}')
 
                     for i in range(4):
@@ -856,7 +976,12 @@ class FlowCalibrator(object):
                     measure_data_list = []
                     measure_point_1_k = cali_params['k_min']
                     measure_point_2_k = cali_params['k_max']
-                    filaments_max_flow_k = self._filament_parameters.get_filaments_max_flow_k(task_config_status['filament_soft'][extruder_index])
+                    filament_parameters = self._filament_parameters.get_filament_parameters(
+                        task_config_status['filament_vendor'][extruder_index],
+                        task_config_status['filament_type'][extruder_index],
+                        task_config_status['filament_sub_type'][extruder_index],
+                        extruder.nozzle_diameter,
+                        extruder.nozzle_volume_type)
                     filaments_max_flow_k = max(filaments_max_flow_k, measure_point_2_k)
                     gcmd.respond_info(f'measure k: {measure_point_1_k:.5f}')
                     measure_point_1_area = self._measure_k(extruder, inductance_coil, measure_point_1_k, cali_params, extruder_dir)
@@ -906,6 +1031,80 @@ class FlowCalibrator(object):
                     elif measure_success_k > filaments_max_flow_k:
                         measure_success_k = filaments_max_flow_k
                     gcmd.respond_info(f'measure_data_list: {measure_data_list}, cali_k: {measure_success_k:.5f}')
+
+                elif algorithm in (ALGORITHM_TYPE_OS_ACCEL, ALGORITHM_TYPE_OS_DECEL, ALGORITHM_TYPE_OS_ACCEL_DECEL):
+                    decel_data_list = []
+                    accel_data_list = []
+
+                    def _unpack_area(result):
+                        """Return (decel, accel) area pair; accel is 0 for single mode."""
+                        if isinstance(result, tuple):
+                            return result[0], result[1]
+                        return result, 0.0
+
+                    k_min = cali_params['k_min']
+                    k_max = cali_params['k_max']
+                    filament_parameters = self._filament_parameters.get_filament_parameters(
+                        task_config_status['filament_vendor'][extruder_index],
+                        task_config_status['filament_type'][extruder_index],
+                        task_config_status['filament_sub_type'][extruder_index],
+                        extruder.nozzle_diameter,
+                        extruder.nozzle_volume_type)
+                    filaments_max_flow_k = max(filaments_max_flow_k, k_max)
+
+                    # ---- point 1: default K ----
+                    gcmd.respond_info(f'measure k: {filament_default_k:.5f}')
+                    r = self._measure_k(extruder, inductance_coil, filament_default_k, cali_params, extruder_dir)
+                    d, a = _unpack_area(r)
+                    gcmd.respond_info(f'measure area: decel {d:.5f}, accel {a:.5f}')
+                    decel_data_list.append((filament_default_k, d))
+                    accel_data_list.append((filament_default_k, a))
+
+                    # ---- point 2: k_min ----
+                    gcmd.respond_info(f'measure k: {k_min:.5f}')
+                    r = self._measure_k(extruder, inductance_coil, k_min, cali_params, extruder_dir)
+                    d, a = _unpack_area(r)
+                    gcmd.respond_info(f'measure area: decel {d:.5f}, accel {a:.5f}')
+                    decel_data_list.append((k_min, d))
+                    accel_data_list.append((k_min, a))
+
+                    # ---- point 3: k_max ----
+                    gcmd.respond_info(f'measure k: {k_max:.5f}')
+                    r = self._measure_k(extruder, inductance_coil, k_max, cali_params, extruder_dir)
+                    d, a = _unpack_area(r)
+                    gcmd.respond_info(f'measure area: decel {d:.5f}, accel {a:.5f}')
+                    decel_data_list.append((k_max, d))
+                    accel_data_list.append((k_max, a))
+
+                    # ---- point 4: midpoint of k_min and k_max ----
+                    k_mid = (k_min + k_max) / 2.0
+                    gcmd.respond_info(f'measure k: {k_mid:.5f}')
+                    r = self._measure_k(extruder, inductance_coil, k_mid, cali_params, extruder_dir)
+                    d, a = _unpack_area(r)
+                    gcmd.respond_info(f'measure area: decel {d:.5f}, accel {a:.5f}')
+                    decel_data_list.append((k_mid, d))
+                    accel_data_list.append((k_mid, a))
+
+                    # ---- fit & decide ----
+                    calc_decel_k, calc_accel_k = self._calculate_os_linear_fitting_zero_crossing(
+                        decel_data_list, accel_data_list, default_k=filament_default_k)
+                    measure_success_k = filament_default_k
+                    if algorithm == ALGORITHM_TYPE_OS_ACCEL_DECEL:
+                        measure_success_k = (calc_decel_k + calc_accel_k) / 2.0
+                    elif algorithm == ALGORITHM_TYPE_OS_DECEL:
+                        measure_success_k = calc_decel_k
+                    elif algorithm == ALGORITHM_TYPE_OS_ACCEL:
+                        measure_success_k = calc_accel_k
+                    else:
+                        logging.error(f'unknown algorithm: {algorithm}')
+                        measure_success_k = filament_default_k
+
+                    if measure_success_k < 0:
+                        measure_success_k = 0
+                    elif measure_success_k > filaments_max_flow_k:
+                        measure_success_k = filaments_max_flow_k
+                    gcmd.respond_info(f'decel_data_list: {decel_data_list}, accel_data_list: {accel_data_list}')
+                    gcmd.respond_info(f'calc_decel_k: {calc_decel_k:.5f}, calc_accel_k: {calc_accel_k:.5f}, select_k: {measure_success_k:.5f}')
 
             except AbortCalibration as e:
                 if self._abort_reason == ABORT_REASON_FILAMENT_RUNOUT:
@@ -1020,23 +1219,76 @@ class FlowCalibrator(object):
                           % (filename,))
 
     def cmd_FLOW_MEASURE_K(self, gcmd):
-        temperature = gcmd.get_int('TEMP', 250)
+        extruder_index = self._toolhead.get_extruder().extruder_index
+        task_config_status = self._task_config.get_status()
+        extruder = self._toolhead.get_extruder()
+        extruder_index = extruder.extruder_index
+        nozzle_diameter = extruder.nozzle_diameter
+        nozzle_volume_type = extruder.nozzle_volume_type
+        task_config_status = self._task_config.get_status()
+        filament_parameters = self._filament_parameters.get_filament_parameters(
+                                            task_config_status['filament_vendor'][extruder_index],
+                                            task_config_status['filament_type'][extruder_index],
+                                            task_config_status['filament_sub_type'][extruder_index],
+                                            nozzle_diameter,
+                                            nozzle_volume_type)
+        builtin_flow_temp = filament_parameters['print_temp']
+        builtin_flow_accel = filament_parameters['accel']
+        builtin_flow_slow_v = filament_parameters['slow_v']
+        builtin_flow_fast_v = filament_parameters['fast_v']
+        builtin_flow_k_min = filament_parameters['flow_k_min']
+        builtin_flow_k_max = filament_parameters['flow_k_max']
+        builtin_flow_k = filament_parameters['flow_k']
+
+        temperature = gcmd.get_int('TEMP', builtin_flow_temp)
         self._abort_calibration = False
         self._abort_reason = None
-        cali_params = {
-            'k_min': gcmd.get_float('MIN', self._env['k_min']),
-            'k_max': gcmd.get_float('MAX', self._env['k_max']),
-            'k_step': gcmd.get_float('STEP', self._env['k_step']),
-            'start_vel': gcmd.get_float('STARTV', self._env['start_vel']),
-            'start_dist': gcmd.get_float('STARTD', self._env['start_dist']),
-            'slow_vel': gcmd.get_float('SLOWV', self._env['slow_vel']),
-            'slow_dist': gcmd.get_float('SLOWD', self._env['slow_dist']),
-            'fast_dist': gcmd.get_float('FASTD', self._env['fast_dist']),
-            'fast_vel': gcmd.get_float('FASTV', self._env['fast_vel']),
-            'accel': gcmd.get_int('ACCEL', self._env['accel']),
-            'loop': gcmd.get_int('LOOP', self._env['loop']),
-            'temp': temperature
+
+        algorithm = gcmd.get('ALGORITHM', ALGORITHM_TYPE_LINEAR_FITTING)
+        os_count = gcmd.get_int('OS_COUNT', 20, minval=1, maxval=100)
+
+        _area_algo_map = {
+            ALGORITHM_TYPE_OS_ACCEL:       (AERA_CALC_MODE_OS, os_count),
+            ALGORITHM_TYPE_OS_DECEL:       (AERA_CALC_MODE_OS, os_count),
+            ALGORITHM_TYPE_OS_ACCEL_DECEL: (AERA_CALC_MODE_OS, os_count),
         }
+        _algo_calc_mode, _algo_sample_count = _area_algo_map.get(algorithm, (AERA_CALC_MODE_ORIGINAL, 0))
+
+        fast_v = gcmd.get_float('FASTV', builtin_flow_fast_v, minval=0)
+        slow_v = gcmd.get_float('SLOWV', builtin_flow_slow_v, minval=0)
+        start_vel = gcmd.get_float('STARTV', (fast_v + slow_v) / 2.0, minval=0)
+        accel = gcmd.get_float('ACCEL', builtin_flow_accel, minval=5)
+
+        _ramp_dist = (fast_v**2 - slow_v**2) / (2.0 * accel)
+        flow_start_d = max(start_vel * 1, 3)
+        # flow_slow_d = max(slow_v * 1.0 + _ramp_dist, 0.5)
+        # flow_fast_d = max(fast_v * 1.0 + _ramp_dist, 0.8)
+        flow_slow_d = max(slow_v * 0.5 , 0.5)
+        flow_fast_d = max(fast_v * 0.5 + 2 * _ramp_dist, 0.8)
+
+        start_dist = gcmd.get_float('STARTD', flow_start_d, minval=0)
+        slow_dist = gcmd.get_float('SLOWD', flow_slow_d, minval=0)
+        fast_dist = gcmd.get_float('FASTD', flow_fast_d, minval=0)
+
+        cali_params = {
+            'k_min': gcmd.get_float('MIN', builtin_flow_k_min),
+            'k_max': gcmd.get_float('MAX', builtin_flow_k_max),
+            'k_step': gcmd.get_float('STEP', self._env['k_step']),
+            'start_vel': start_vel,
+            'start_dist': start_dist,
+            'slow_vel': slow_v,
+            'slow_dist': slow_dist,
+            'fast_dist': fast_dist,
+            'fast_vel': fast_v,
+            'accel': accel,
+            'loop': gcmd.get_int('LOOP', self._env['loop']),
+            'temp': temperature,
+            'calc_mode': _algo_calc_mode,
+            'os_sample_count': _algo_sample_count
+        }
+
+        gcmd.respond_info("[flow_measure_k] calib_param: %s \r\n" % (str(cali_params)))
+
         # check if target extruder is current extruder?
         extruder = self._toolhead.get_extruder()
         estepper = extruder.extruder_stepper
@@ -1084,13 +1336,19 @@ class FlowCalibrator(object):
             extruder_dir = data_path.joinpath(f'{time.strftime("%m%d-%H%M")}_{extruder.get_name()}')
             if not os.path.exists(extruder_dir):
                 os.makedirs(extruder_dir)
+            else:
+                logging.info(f'frequency_data dir {extruder_dir} already exists')
+                extruder_dir = data_path.joinpath(f'{time.strftime("%m%d-%H%M")}_{extruder.get_name()}_{random.randint(0, 10000)}')
             # notify other objects to start flow calibration
             self._printer.send_event('flow_calibration:begin')
             gcmd.respond_info(f'k min: {k_min/1000:.3f}, max: {k_max/1000:.3f}, step: {k_step/1000:.3f}')
             for k in range(k_min, k_max, k_step):
                 float_k = round(k / 1000, 3)
                 area = self._measure_k(extruder, inductance_coil, float_k, cali_params, extruder_dir)
-                gcmd.respond_info(f'k{float_k:.3f}: area: {area}')
+                if isinstance(area, tuple):
+                    gcmd.respond_info(f'k{float_k:.3f}: decel={area[0]:.3f}, accel={area[1]:.3f}')
+                else:
+                    gcmd.respond_info(f'k{float_k:.3f}: area={area:.3f}')
         except AbortCalibration as e:
             gcmd.respond_info(f'abort calibration')
         self._set_pressure_advance(extruder, DEFAULT_K[extruder.get_name()], backup_st)

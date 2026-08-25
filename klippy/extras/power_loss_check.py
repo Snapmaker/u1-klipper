@@ -1,8 +1,10 @@
 # Power loss detection handling
 
-import logging, copy, ctypes
+import json, logging, os, copy, ctypes
 import pins
 import stepper
+
+POWER_LOSS_CHECK_CFG_FILE = 'power_loss_check.json'
 
 class PowerLossCheck:
     def __init__(self, config):
@@ -17,7 +19,22 @@ class PowerLossCheck:
         pin = config.get('pin')
         pin_params = ppins.lookup_pin(pin, can_invert=True, can_pullup=True)
         self._mcu = pin_params['chip']
-        self.power_loss_trigger_time = config.getfloat('power_loss_trigger_time', 0.0109, above=0.)
+        cfg_trigger_time = config.getfloat('power_loss_trigger_time', 0.0109, above=0.)
+        self.power_loss_trigger_time = cfg_trigger_time
+        if self.name == 'master':
+            self._config_path = os.path.join(self.printer.get_snapmaker_config_dir(),
+                                             POWER_LOSS_CHECK_CFG_FILE)
+            trigger_source = "default config"
+            try:
+                with open(self._config_path, 'r', encoding='utf-8') as f:
+                    val = json.load(f).get('power_loss_trigger_time')
+                if val is not None and val > 0:
+                    self.power_loss_trigger_time = float(val)
+                    trigger_source = "json config"
+            except Exception:
+                pass
+            logging.info("power_loss_check: power_loss_trigger_time=%.6f (from %s)",
+                         self.power_loss_trigger_time, trigger_source)
         self.report_interval_time = config.getint('report_interval', 0, minval=0)
         self.duty_threshold = config.getfloat('duty_threshold', 0.54, minval=0)
         self.debounce_threshold = config.getint('debounce_threshold', 20, minval=0)
@@ -50,6 +67,9 @@ class PowerLossCheck:
             self.gcode.register_command('ENABLE_POWER_LOSS_REPORT_LOG',
                                     self.cmd_ENABLE_POWER_LOSS_REPORT_LOG,
                                     desc=self.cmd_ENABLE_POWER_LOSS_REPORT_LOG_help)
+            self.gcode.register_command('SET_POWER_LOSS_TRIGGER_TIME',
+                                    self.cmd_SET_POWER_LOSS_TRIGGER_TIME,
+                                    desc=self.cmd_SET_POWER_LOSS_TRIGGER_TIME_help)
 
         self.gcode.register_mux_command("ENABLE_POWER_LOSS", "NAME", self.name,
                                         self.cmd_ENABLE_POWER_LOSS)
@@ -267,6 +287,34 @@ class PowerLossCheck:
         self.enable_power_loss_cmd.send([self._oid, enable, print_flag, move_line])
         gcmd.respond_info("%s power loss %s, print_flag %d, move_line %d" %
                          (self.name, "enabled" if enable else "disabled", print_flag, move_line))
+
+    cmd_SET_POWER_LOSS_TRIGGER_TIME_help = "Set power loss trigger time and save to config file"
+    def cmd_SET_POWER_LOSS_TRIGGER_TIME(self, gcmd):
+        val = gcmd.get_float('TIME', None, minval=0.001, maxval=1.0)
+        if val is None:
+            gcmd.respond_info("Usage: SET_POWER_LOSS_TRIGGER_TIME TIME=<seconds>")
+            return
+        self.power_loss_trigger_time = val
+        save_ok = False
+        try:
+            self.printer.update_snapmaker_config_file(
+                self._config_path, {'power_loss_trigger_time': val}, {})
+            save_ok = True
+        except Exception:
+            logging.exception("power_loss_check: failed to save config")
+        try:
+            configfile = self.printer.lookup_object('configfile')
+            configfile.set('power_loss_check', 'power_loss_trigger_time', "%.6f" % val)
+        except Exception:
+            logging.exception("power_loss_check: configfile.set failed")
+        if save_ok:
+            gcmd.respond_info(
+                "power_loss_trigger_time=%.6f\n"
+                "The SAVE_CONFIG command will update the printer config file\n"
+                "with this parameter and restart the printer." % val)
+        else:
+            gcmd.respond_info(
+                "power_loss_trigger_time=%.6f set (persist failed)" % val)
 
 def load_config(config):
     power_loss_check_list = config.get_printer().lookup_object('power_loss_check_list', None)

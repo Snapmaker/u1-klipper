@@ -142,6 +142,11 @@ class Purifier:
         self.config_path = os.path.join(config_dir, PURIFIER_CONFIG_FILE)
         self.config_info = self.printer.load_snapmaker_config_file(self.config_path,
                                                               DEFAULT_PURIFIER_CONFIG)
+        # check config
+        if self.config_info['inner_work_time'] < 0:
+            self.config_info['inner_work_time'] = 0.0
+            self.printer.update_snapmaker_config_file(self.config_path,
+                        self.config_info, DEFAULT_PURIFIER_CONFIG)
 
         # exhaust_fan
         self._exhaust_fan = None
@@ -910,6 +915,8 @@ class Purifier:
                     delay = self.config_info['inner_delay_time']
 
                 if work != None:
+                    if work < 0:
+                        raise ValueError("[purifier] work time must >= 0!")
                     self.config_info['inner_work_time'] = float(work)
                     need_save = True
 
@@ -974,6 +981,8 @@ class Purifier:
                 delay = self.config_info['inner_delay_time']
 
             if work != None:
+                if work < 0:
+                    raise gcmd.error("[purifier] work time must >= 0!")
                 self.config_info['inner_work_time'] = float(work)
                 need_save = True
 

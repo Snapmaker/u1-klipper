@@ -141,6 +141,9 @@ class PrintStats:
         self.error_message = ""
         self.exception_details = {}
         self.printer.send_event("print_stats:start")
+        # Force a full refresh of print_stats to subscribers on print start
+        self.printer.lookup_object('webhooks').send_status('print_stats')
+
     def note_pause(self, message=None):
         if self.last_pause_time is None:
             curtime = self.reactor.monotonic()
@@ -164,7 +167,7 @@ class PrintStats:
     def _note_finish(self, state, error_message = ""):
         print_config = self.printer.lookup_object('print_task_config', None)
         if print_config is not None:
-            print_config.reset_print_info()
+            print_config.reset_print_info(is_finish_print=True)
         if self.print_start_time is None:
             self.printer.send_event("print_stats:stop")
             return

@@ -67,6 +67,10 @@ try:
             pass
         raise TypeError
 
+    _ENCODE_ERRORS = (TypeError, ValueError)
+    if hasattr(_orjson, 'JSONEncodeError'):
+        _ENCODE_ERRORS = (TypeError, ValueError, _orjson.JSONEncodeError)
+
     def dumps(obj, separators=None, indent=None, sort_keys=False):
         if indent is not None and indent != 2:
             return _stdlib_dumps(obj, separators=separators,
@@ -76,16 +80,27 @@ try:
             opts |= _orjson.OPT_SORT_KEYS
         if indent is not None:
             opts |= _orjson.OPT_INDENT_2
-        return _orjson.dumps(obj, option=opts, default=_default).decode('utf-8')
+        try:
+            return _orjson.dumps(obj, option=opts, default=_default).decode('utf-8')
+        except _ENCODE_ERRORS:
+            return _stdlib_dumps(obj, separators=separators,
+                                 indent=indent, sort_keys=sort_keys)
 
     def dumps_bytes(obj, separators=None, sort_keys=False):
         opts = 0
         if sort_keys:
             opts |= _orjson.OPT_SORT_KEYS
-        return _orjson.dumps(obj, option=opts, default=_default)
+        try:
+            return _orjson.dumps(obj, option=opts, default=_default)
+        except _ENCODE_ERRORS:
+            return _stdlib_dumps_bytes(obj, separators=separators,
+                                       sort_keys=sort_keys)
 
     def loads(s):
-        return _orjson.loads(s)
+        try:
+            return _orjson.loads(s)
+        except ValueError:
+            return _stdlib_json.loads(s)
 
     HAS_ORJSON = True
 
