@@ -1,9 +1,5 @@
 import logging, os, threading
 
-FAN_STATE_TURN_ON                                   = 0
-FAN_STATE_TURN_OFF                                  = 1
-FAN_STATE_TURNING_OFF                               = 2
-
 # Mode definitions
 MODE_IDLE                                           = 0 # Idle mode - original functionality
 MODE_COOL_CHAMBER                                   = 1 # Cool chamber mode - exhaust fan + temperature detection + dynamic fan control
@@ -51,8 +47,8 @@ class PurifierFanRouter:
     # both drive the fan through fan.set_speed_from_command(), as does the
     # M106/M107 fan id mapping in extras/fan.py. Routing that one method means
     # every generic entry point goes through the same path as SET_PURIFIER and
-    # keeps the power enable pin, the fan state machine, the delay-off timers
-    # and the inner fan work time accounting in sync.
+    # keeps the power enable pin, the delay-off timers, the presence gate and
+    # the inner fan work time accounting in sync.
     #
     # Everything else - set_speed(), get_mcu(), last_fan_value, max_power,
     # get_status() - delegates to the real fan.Fan, so PrinterFanGeneric and
@@ -117,8 +113,6 @@ class Purifier:
         self._power_det_value = 1
         self.last_print_time = 0
 
-        self._exhaust_fan_state = FAN_STATE_TURN_OFF
-        self._inner_fan_state = FAN_STATE_TURN_OFF
         self._exhaust_delay_timer = self.reactor.register_timer(self._exhaust_delay_timer_cb)
         self._inner_delay_timer = self.reactor.register_timer(self._inner_delay_timer_cb)
         self._work_time_monitor_timer = self.reactor.register_timer(self._work_time_monitor_timer_cb)
@@ -273,7 +267,7 @@ class Purifier:
         try:
             update_mode = 0
 
-            if self._inner_fan_state != FAN_STATE_TURN_OFF:
+            if self._inner_fan is not None and self._inner_fan.fan.last_fan_value != 0:
                 if self.print_stats is not None:
                     if self.print_stats.state not in ['printing', 'paused']:
                         if self.is_print_task_delay_turnoffing_inner == False:
@@ -351,12 +345,8 @@ class Purifier:
 
         if speed > 1.0:
             speed = 1.0
-            self._exhaust_fan_state = FAN_STATE_TURN_ON
         elif speed < 0.0001:
             speed = 0
-            self._exhaust_fan_state = FAN_STATE_TURN_OFF
-        else:
-            self._exhaust_fan_state = FAN_STATE_TURN_ON
 
         system_time = self.reactor.monotonic()
         system_time += FAN_MIN_TIME
@@ -381,12 +371,8 @@ class Purifier:
 
         if speed > 1.0:
             speed = 1.0
-            self._inner_fan_state = FAN_STATE_TURN_ON
         elif speed < 0.0001:
             speed = 0
-            self._inner_fan_state = FAN_STATE_TURN_OFF
-        else:
-            self._inner_fan_state = FAN_STATE_TURN_ON
 
         system_time = self.reactor.monotonic()
         system_time += FAN_MIN_TIME
@@ -398,7 +384,7 @@ class Purifier:
         self.last_print_time = print_time
         self.is_print_task_delay_turnoffing_inner = False
 
-        if self._inner_fan_state == FAN_STATE_TURN_ON:
+        if speed != 0:
             if self._inner_last_turn_on_time is None:
                 if self.purifier_mode in [MODE_PREHEAT_CHAMBER, MODE_HOT_CHAMBER]:
                     if self.print_stats is None or \
@@ -719,26 +705,24 @@ class Purifier:
         self.inner_fan_speed_threshold = 0
 
     def set_exhaust_fan_delay_turn_off(self, delay):
-        if self._exhaust_fan_state == FAN_STATE_TURN_OFF:
+        if self._exhaust_fan is None or self._exhaust_fan.fan.last_fan_value == 0:
             self.is_print_task_delay_turnoffing_exhaust = False
             return
 
         if delay < 1:
             self.set_exhaust_fan_speed(0)
         else:
-            self._exhaust_fan_state = FAN_STATE_TURNING_OFF
             self.reactor.update_timer(self._exhaust_delay_timer, self.reactor.monotonic() + delay)
             self.is_print_task_delay_turnoffing_exhaust = True
 
     def set_inner_fan_delay_turn_off(self, delay):
-        if self._inner_fan_state == FAN_STATE_TURN_OFF:
+        if self._inner_fan is None or self._inner_fan.fan.last_fan_value == 0:
             self.is_print_task_delay_turnoffing_inner = False
             return
 
         if delay < 1:
             self.set_inner_fan_speed(0)
         else:
-            self._inner_fan_state = FAN_STATE_TURNING_OFF
             self.reactor.update_timer(self._inner_delay_timer, self.reactor.monotonic() + delay)
             self.is_print_task_delay_turnoffing_inner = True
 
