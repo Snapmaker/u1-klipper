@@ -1413,40 +1413,31 @@ class PrintTaskConfig:
                         continue
                     map_e = tmp_print_task_config['extruder_map_table'][i]
                     if tmp_print_task_config['extruders_used'][map_e]:
-                        if tmp_print_task_config_2['filament_volume_type'][i] != actual_nozzle_volume_type[map_e]:
+                        if tmp_print_task_config_2['filament_volume_type'][i] != actual_nozzle_volume_type[map_e] and \
+                            actual_nozzle_volume_type[map_e] != 'high_flow':
                             exception_code = 19
                             raise gcmd.error("[print_task_config] nozzle volume type mismatch:" +
                                 f"f{i}_{tmp_print_task_config_2['filament_volume_type'][i]} != " +
                                 f"e{map_e}_{actual_nozzle_volume_type[map_e]}")
-            else:
-                if slicer == SNAPMAKER_OFFICIAL_ORCASLICER:
-                    for i in range(PHYSICAL_EXTRUDER_NUM):
-                        if tmp_print_task_config['extruders_used'][i]:
-                            if actual_nozzle_volume_type[i] != 'standard':
-                                exception_code = 19
-                                raise gcmd.error("[print_task_config] nozzle volume type mismatch:" +
-                                    f"f_standard != e{i}_{actual_nozzle_volume_type[i]}")
 
-            # check flow calibration
-            if tmp_print_task_config['flow_calibrate']:
-                for i in range(PHYSICAL_EXTRUDER_NUM):
-                    if tmp_print_task_config['extruders_used'][i] == False:
-                        continue
-                    if tmp_print_task_config['flow_calib_extruders'][i] == False:
-                        continue
-                    is_allow = self.filament_param_obj.is_allow_to_print(
-                            tmp_print_task_config['filament_vendor'][i],
-                            tmp_print_task_config['filament_type'][i],
-                            tmp_print_task_config['filament_sub_type'][i],
-                            actual_nozzle_diameter[i],
-                            actual_nozzle_volume_type[i])
-                    if not is_allow:
-                        exception_code = 18
-                        raise gcmd.error("[flow_calibrate] %.1f nozzle, %s %s %s not allow to calibrate!" % (
-                                            actual_nozzle_diameter[i],
-                                            tmp_print_task_config['filament_vendor'][i],
-                                            tmp_print_task_config['filament_type'][i],
-                                            tmp_print_task_config['filament_sub_type'][i]))
+            # Check whether the filaments are compatible with the corresponding nozzle and allow printing
+            for i in range(PHYSICAL_EXTRUDER_NUM):
+                if tmp_print_task_config['extruders_used'][i] == False:
+                    continue
+                is_allow = self.filament_param_obj.is_allow_to_print(
+                        tmp_print_task_config['filament_vendor'][i],
+                        tmp_print_task_config['filament_type'][i],
+                        tmp_print_task_config['filament_sub_type'][i],
+                        actual_nozzle_diameter[i],
+                        actual_nozzle_volume_type[i])
+                if not is_allow:
+                    exception_index = i
+                    exception_code = 25
+                    raise gcmd.error("[print_task_config] %.1f nozzle, %s %s %s not allow to print!" % (
+                                        actual_nozzle_diameter[i],
+                                        tmp_print_task_config['filament_vendor'][i],
+                                        tmp_print_task_config['filament_type'][i],
+                                        tmp_print_task_config['filament_sub_type'][i]))
 
             self.print_task_config = tmp_print_task_config
             self.print_task_config_2 = tmp_print_task_config_2

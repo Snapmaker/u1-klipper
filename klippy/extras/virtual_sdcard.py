@@ -324,6 +324,10 @@ class VirtualSD:
         rm_pl_env_file = gcmd.get_int('RM_PL_ENV_FILE', 1)
         self._reset_file(rm_pl_env_file)
         filename = gcmd.get("FILENAME")
+        if not filename:
+            error = '{"coded": "0003-0531-0000-0028", "msg":"%s", "action": "none"}' % (
+                "Confirm whether the filename is legal, for example, it cannot contain # ")
+            raise gcmd.error(error)
         if filename[0] == '/':
             filename = filename[1:]
         try:
@@ -367,6 +371,10 @@ class VirtualSD:
         rm_pl_env_file = gcmd.get_int('RM_PL_ENV_FILE', 1)
         self._reset_file(rm_pl_env_file)
         filename = gcmd.get("FILENAME")
+        if not filename:
+            error = '{"coded": "0003-0531-0000-0028", "msg":"%s", "action": "none"}' % (
+                "Confirm whether the filename is legal, for example, it cannot contain # ")
+            raise gcmd.error(error)
         if filename[0] == '/':
             filename = filename[1:]
         try:
@@ -1939,6 +1947,7 @@ class VirtualSD:
             self.gcode.respond_info("pl_mcu_flash_resume_line: {}".format(self.pl_mcu_flash_resume_line))
             self.gcode.run_script_from_command("TIMELAPSE_START TYPE=continue")
             self.gcode.run_script_from_command("DEFECT_DETECTION_START")
+            self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=IDLE")
             self.do_resume()
         except Exception as e:
             self.gcode.respond_info("Failed to restore pl_print, error: {}".format(str(e)))

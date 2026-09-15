@@ -36,10 +36,9 @@ FILAMENT_FLOW_K_MAX_UNKNOWN_06                  = 0.070
 FILAMENT_FLOW_K_MAX_UNKNOWN_08                  = 0.050
 
 FILAMENT_IS_SOFT_UNKNOWN                        = False
-FILAMENT_PARAMETER_VERSION                      = '1.0.0'
+FILAMENT_PARAMETER_VERSION                      = '1.0.1'
 
 FORBIDDEN_FILAMENT_TYPES_02 = {
-    'PLA': ['Wood'],
     'PLA-CF': ['*'],
     'PETG-CF': ['*'],
     'TPU': ['*'],
@@ -47,6 +46,7 @@ FORBIDDEN_FILAMENT_TYPES_02 = {
     'PA': ['*'],
     'PC': ['*'],
     'PEBA': ['*'],
+    'ANY': ['Glow', 'Marble', 'Wood'],
     # any -CF filaments #
     # any -GF filaments #
 }
@@ -100,11 +100,23 @@ FILAMENT_PARA_CFG_STANDARD_02_DEFAULT = {
     'Snapmaker_PLA_Silk_flow_k_max': 0.25,
     'Snapmaker_PLA_Silk_vol_speed': 2,
 
+    'Snapmaker_PLA_Full Spectrum_print_temp': 220,
+    'Snapmaker_PLA_Full Spectrum_flow_k': 0.2,
+    'Snapmaker_PLA_Full Spectrum_flow_k_min': 0.01,
+    'Snapmaker_PLA_Full Spectrum_flow_k_max': 0.25,
+    'Snapmaker_PLA_Full Spectrum_vol_speed': 2,
+
     'Snapmaker_PLA_Translucent_print_temp': 220,
     'Snapmaker_PLA_Translucent_flow_k': 0.15,
     'Snapmaker_PLA_Translucent_flow_k_min': 0.01,
     'Snapmaker_PLA_Translucent_flow_k_max': 0.25,
     'Snapmaker_PLA_Translucent_vol_speed': 1.6,
+
+    'Snapmaker_PLA_Rainbow_print_temp': 230,
+    'Snapmaker_PLA_Rainbow_flow_k': 0.156,
+    'Snapmaker_PLA_Rainbow_flow_k_min': 0.01,
+    'Snapmaker_PLA_Rainbow_flow_k_max': 0.25,
+    'Snapmaker_PLA_Rainbow_vol_speed': 2,
 
     'Polymaker_PLA_PolyLite_print_temp': 220,
     'Polymaker_PLA_PolyLite_flow_k': 0.2,
@@ -266,6 +278,24 @@ FILAMENT_PARA_CFG_STANDARD_04_DEFAULT = {
     'Snapmaker_PLA_Translucent_flow_k_min': 0.005,
     'Snapmaker_PLA_Translucent_flow_k_max': 0.040,
     'Snapmaker_PLA_Translucent_vol_speed': 12,
+
+    'Snapmaker_PLA_Rainbow_print_temp': 230,
+    'Snapmaker_PLA_Rainbow_flow_k': 0.01,
+    'Snapmaker_PLA_Rainbow_flow_k_min': 0.005,
+    'Snapmaker_PLA_Rainbow_flow_k_max': 0.040,
+    'Snapmaker_PLA_Rainbow_vol_speed': 20,
+
+    'Snapmaker_PLA_Marble_print_temp': 220,
+    'Snapmaker_PLA_Marble_flow_k': 0.016,
+    'Snapmaker_PLA_Marble_flow_k_min': 0.005,
+    'Snapmaker_PLA_Marble_flow_k_max': 0.040,
+    'Snapmaker_PLA_Marble_vol_speed': 20,
+
+    'Snapmaker_PLA_Glow_print_temp': 220,
+    'Snapmaker_PLA_Glow_flow_k': 0.02,
+    'Snapmaker_PLA_Glow_flow_k_min': 0.005,
+    'Snapmaker_PLA_Glow_flow_k_max': 0.040,
+    'Snapmaker_PLA_Glow_vol_speed': 16,
 
     'Polymaker_PLA_PolyLite_print_temp': 220,
     'Polymaker_PLA_PolyLite_flow_k': 0.02,
@@ -589,10 +619,28 @@ FILAMENT_PARA_CFG_STANDARD_06_DEFAULT = {
     'Snapmaker_PLA_Wood_vol_speed': 18,
 
     'Snapmaker_PLA_Translucent_print_temp': 220,
-    'Snapmaker_PLA_Translucent_flow_k': 0.02,
+    'Snapmaker_PLA_Translucent_flow_k': 0.018,
     'Snapmaker_PLA_Translucent_flow_k_min': 0.005,
     'Snapmaker_PLA_Translucent_flow_k_max': 0.025,
     'Snapmaker_PLA_Translucent_vol_speed': 12,
+
+    'Snapmaker_PLA_Rainbow_print_temp': 230,
+    'Snapmaker_PLA_Rainbow_flow_k': 0.01,
+    'Snapmaker_PLA_Rainbow_flow_k_min': 0.005,
+    'Snapmaker_PLA_Rainbow_flow_k_max': 0.040,
+    'Snapmaker_PLA_Rainbow_vol_speed': 22,
+
+    'Snapmaker_PLA_Marble_print_temp': 220,
+    'Snapmaker_PLA_Marble_flow_k': 0.011,
+    'Snapmaker_PLA_Marble_flow_k_min': 0.005,
+    'Snapmaker_PLA_Marble_flow_k_max': 0.040,
+    'Snapmaker_PLA_Marble_vol_speed': 20,
+
+    'Snapmaker_PLA_Glow_print_temp': 220,
+    'Snapmaker_PLA_Glow_flow_k': 0.02,
+    'Snapmaker_PLA_Glow_flow_k_min': 0.005,
+    'Snapmaker_PLA_Glow_flow_k_max': 0.040,
+    'Snapmaker_PLA_Glow_vol_speed': 18,
 
     'Polymaker_PLA_PolyLite_print_temp': 220,
     'Polymaker_PLA_PolyLite_flow_k': 0.012,
@@ -914,10 +962,28 @@ FILAMENT_PARA_CFG_STANDARD_08_DEFAULT = {
     'Snapmaker_PLA_Wood_vol_speed': 20,
 
     'Snapmaker_PLA_Translucent_print_temp': 220,
-    'Snapmaker_PLA_Translucent_flow_k': 0.02,
+    'Snapmaker_PLA_Translucent_flow_k': 0.016,
     'Snapmaker_PLA_Translucent_flow_k_min': 0.001,
     'Snapmaker_PLA_Translucent_flow_k_max': 0.025,
     'Snapmaker_PLA_Translucent_vol_speed': 12,
+
+    'Snapmaker_PLA_Rainbow_print_temp': 230,
+    'Snapmaker_PLA_Rainbow_flow_k': 0.01,
+    'Snapmaker_PLA_Rainbow_flow_k_min': 0.005,
+    'Snapmaker_PLA_Rainbow_flow_k_max': 0.040,
+    'Snapmaker_PLA_Rainbow_vol_speed': 22,
+
+    'Snapmaker_PLA_Marble_print_temp': 220,
+    'Snapmaker_PLA_Marble_flow_k': 0.009,
+    'Snapmaker_PLA_Marble_flow_k_min': 0.005,
+    'Snapmaker_PLA_Marble_flow_k_max': 0.040,
+    'Snapmaker_PLA_Marble_vol_speed': 22,
+
+    'Snapmaker_PLA_Glow_print_temp': 220,
+    'Snapmaker_PLA_Glow_flow_k': 0.01,
+    'Snapmaker_PLA_Glow_flow_k_min': 0.005,
+    'Snapmaker_PLA_Glow_flow_k_max': 0.040,
+    'Snapmaker_PLA_Glow_vol_speed': 18,
 
     'Polymaker_PLA_PolyLite_print_temp': 220,
     'Polymaker_PLA_PolyLite_flow_k': 0.008,
@@ -1209,13 +1275,13 @@ FILAMENT_PARA_CFG_HIGH_FLOW_04_DEFAULT = {
     'Snapmaker_PLA_Basic_vol_speed': 15,
 
     'Snapmaker_PLA_SnapSpeed_print_temp': 220,
-    'Snapmaker_PLA_SnapSpeed_flow_k': 0.027,
+    'Snapmaker_PLA_SnapSpeed_flow_k': 0.024,
     'Snapmaker_PLA_SnapSpeed_flow_k_min': 0.005,
     'Snapmaker_PLA_SnapSpeed_flow_k_max': 0.040,
     'Snapmaker_PLA_SnapSpeed_vol_speed': 40,
 
     'Snapmaker_PLA_Matte_print_temp': 220,
-    'Snapmaker_PLA_Matte_flow_k': 0.02,
+    'Snapmaker_PLA_Matte_flow_k': 0.024,
     'Snapmaker_PLA_Matte_flow_k_min': 0.005,
     'Snapmaker_PLA_Matte_flow_k_max': 0.040,
     'Snapmaker_PLA_Matte_vol_speed': 40,
@@ -1226,14 +1292,32 @@ FILAMENT_PARA_CFG_HIGH_FLOW_04_DEFAULT = {
     'Snapmaker_PLA_Silk_flow_k_max': 0.035,
     'Snapmaker_PLA_Silk_vol_speed': 12,
 
+    'Snapmaker_PLA_Wood_print_temp': 220,
+    'Snapmaker_PLA_Wood_flow_k': 0.024,
+    'Snapmaker_PLA_Wood_flow_k_min': 0.005,
+    'Snapmaker_PLA_Wood_flow_k_max': 0.040,
+    'Snapmaker_PLA_Wood_vol_speed': 35,
+
+    'Snapmaker_PLA_Full Spectrum_print_temp': 220,
+    'Snapmaker_PLA_Full Spectrum_flow_k': 0.02,
+    'Snapmaker_PLA_Full Spectrum_flow_k_min': 0.005,
+    'Snapmaker_PLA_Full Spectrum_flow_k_max': 0.040,
+    'Snapmaker_PLA_Full Spectrum_vol_speed': 15,
+
+    'Snapmaker_PLA_Translucent_print_temp': 220,
+    'Snapmaker_PLA_Translucent_flow_k': 0.024,
+    'Snapmaker_PLA_Translucent_flow_k_min': 0.001,
+    'Snapmaker_PLA_Translucent_flow_k_max': 0.035,
+    'Snapmaker_PLA_Translucent_vol_speed': 12,
+
     'Polymaker_PLA_PolySonic_print_temp': 220,
-    'Polymaker_PLA_PolySonic_flow_k': 0.027,
+    'Polymaker_PLA_PolySonic_flow_k': 0.024,
     'Polymaker_PLA_PolySonic_flow_k_min': 0.005,
     'Polymaker_PLA_PolySonic_flow_k_max': 0.040,
     'Polymaker_PLA_PolySonic_vol_speed': 40,
 
     'Polymaker_PLA_PolyTerra_print_temp': 220,
-    'Polymaker_PLA_PolyTerra_flow_k': 0.02,
+    'Polymaker_PLA_PolyTerra_flow_k': 0.024,
     'Polymaker_PLA_PolyTerra_flow_k_min': 0.005,
     'Polymaker_PLA_PolyTerra_flow_k_max': 0.040,
     'Polymaker_PLA_PolyTerra_vol_speed': 40,
@@ -1246,6 +1330,12 @@ FILAMENT_PARA_CFG_HIGH_FLOW_04_DEFAULT = {
     'generic_PLA-CF_generic_flow_k_min': 0.005,
     'generic_PLA-CF_generic_flow_k_max': 0.040,
     'generic_PLA-CF_generic_vol_speed': 12,
+
+    'Snapmaker_PLA-CF_generic_print_temp': 230,
+    'Snapmaker_PLA-CF_generic_flow_k': 0.02,
+    'Snapmaker_PLA-CF_generic_flow_k_min': 0.005,
+    'Snapmaker_PLA-CF_generic_flow_k_max': 0.035,
+    'Snapmaker_PLA-CF_generic_vol_speed': 36,
 
     'generic_PETG_generic_load_temp': 270,
     'generic_PETG_generic_unload_temp': 270,
@@ -1262,11 +1352,32 @@ FILAMENT_PARA_CFG_HIGH_FLOW_04_DEFAULT = {
     'generic_PETG_HF_flow_k_max': 0.040,
     'generic_PETG_HF_vol_speed': 16,
 
+    'Snapmaker_PETG_Translucent_print_temp': 250,
+    'Snapmaker_PETG_Translucent_flow_k': 0.038,
+    'Snapmaker_PETG_Translucent_flow_k_min': 0.010,
+    'Snapmaker_PETG_Translucent_flow_k_max': 0.045,
+    'Snapmaker_PETG_Translucent_vol_speed': 10,
+
     'Snapmaker_PETG_HF_print_temp': 245,
     'Snapmaker_PETG_HF_flow_k': 0.035,
     'Snapmaker_PETG_HF_flow_k_min': 0.015,
     'Snapmaker_PETG_HF_flow_k_max': 0.040,
     'Snapmaker_PETG_HF_vol_speed': 30,
+
+    'generic_PETG-CF_generic_load_temp': 270,
+    'generic_PETG-CF_generic_unload_temp': 270,
+    'generic_PETG-CF_generic_is_soft': False,
+    'generic_PETG-CF_generic_print_temp': 255,
+    'generic_PETG-CF_generic_flow_k': 0.02,
+    'generic_PETG-CF_generic_flow_k_min': 0.005,
+    'generic_PETG-CF_generic_flow_k_max': 0.04,
+    'generic_PETG-CF_generic_vol_speed': 11,
+
+    'Snapmaker_PETG-CF_generic_print_temp': 260,
+    'Snapmaker_PETG-CF_generic_flow_k': 0.0285,
+    'Snapmaker_PETG-CF_generic_flow_k_min': 0.005,
+    'Snapmaker_PETG-CF_generic_flow_k_max': 0.04,
+    'Snapmaker_PETG-CF_generic_vol_speed': 25,
 
     'generic_ABS_generic_load_temp': 280,
     'generic_ABS_generic_unload_temp': 280,
@@ -1291,6 +1402,12 @@ FILAMENT_PARA_CFG_HIGH_FLOW_04_DEFAULT = {
     'generic_ASA_generic_flow_k_min': 0.005,
     'generic_ASA_generic_flow_k_max': 0.040,
     'generic_ASA_generic_vol_speed': 12,
+
+    'Snapmaker_ASA_generic_print_temp': 270,
+    'Snapmaker_ASA_generic_flow_k': 0.02,
+    'Snapmaker_ASA_generic_flow_k_min': 0.005,
+    'Snapmaker_ASA_generic_flow_k_max': 0.04,
+    'Snapmaker_ASA_generic_vol_speed': 25,
 
     'generic_TPU_generic_load_temp': 250,
     'generic_TPU_generic_unload_temp': 250,
@@ -1318,6 +1435,18 @@ FILAMENT_PARA_CFG_HIGH_FLOW_04_DEFAULT = {
     'generic_TPU_95A HF_flow_k_min': 0.05,
     'generic_TPU_95A HF_flow_k_max': 0.25,
     'generic_TPU_95A HF_vol_speed': 10.5,
+
+    'Snapmaker_TPU_90A_print_temp': 220,
+    'Snapmaker_TPU_90A_flow_k': 0.4,
+    'Snapmaker_TPU_90A_flow_k_min': 0.05,
+    'Snapmaker_TPU_90A_flow_k_max': 0.45,
+    'Snapmaker_TPU_90A_vol_speed': 3.2,
+
+    'Snapmaker_TPU_95A HF_print_temp': 230,
+    'Snapmaker_TPU_95A HF_flow_k': 0.225,
+    'Snapmaker_TPU_95A HF_flow_k_min': 0.05,
+    'Snapmaker_TPU_95A HF_flow_k_max': 0.25,
+    'Snapmaker_TPU_95A HF_vol_speed': 9.0,
 
     'generic_PA_generic_load_temp': 280,
     'generic_PA_generic_unload_temp': 280,
@@ -1399,6 +1528,12 @@ FILAMENT_PARA_CFG_HIGH_FLOW_04_DEFAULT = {
     'generic_PEBA_generic_flow_k_min': 0.15,
     'generic_PEBA_generic_flow_k_max': 0.45,
     'generic_PEBA_generic_vol_speed': 5,
+
+    'Snapmaker_PEBA_90A_print_temp': 235,
+    'Snapmaker_PEBA_90A_flow_k': 0.4,
+    'Snapmaker_PEBA_90A_flow_k_min': 0.15,
+    'Snapmaker_PEBA_90A_flow_k_max': 0.45,
+    'Snapmaker_PEBA_90A_vol_speed': 8,
 }
 
 
@@ -1672,13 +1807,12 @@ class FilamentParameters:
         is_allow = True
         try:
             if nozzle_diameter > 0.1999 and nozzle_diameter < 0.2001:
-                if filament_main_type in FORBIDDEN_FILAMENT_TYPES_02:
-                    value = FORBIDDEN_FILAMENT_TYPES_02.get(filament_main_type)
-                    if '*' in value:
+                for forbidden_main_type, forbidden_sub_types in FORBIDDEN_FILAMENT_TYPES_02.items():
+                    # 'ANY' matches any main type
+                    if forbidden_main_type != 'ANY' and forbidden_main_type != filament_main_type:
+                        continue
+                    if '*' in forbidden_sub_types or filament_sub_type in forbidden_sub_types:
                         is_allow = False
-                    else:
-                        if filament_sub_type in value:
-                            is_allow = False
                 if filament_main_type.startswith('PA') or filament_main_type.startswith('PC') or \
                     '-CF' in filament_main_type or '-GF' in filament_main_type:
                     is_allow = False

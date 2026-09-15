@@ -68,7 +68,9 @@ class Heater:
         pwm_cycle_time = config.getfloat('pwm_cycle_time', 0.100, above=0.,
                                          maxval=self.pwm_delay)
         self.mcu_pwm.setup_cycle_time(pwm_cycle_time)
-        self.mcu_pwm.setup_max_duration(MAX_HEAT_TIME)
+        self.max_heat_time = config.getfloat('max_heat_time', MAX_HEAT_TIME,
+                                             above=0.)
+        self.mcu_pwm.setup_max_duration(self.max_heat_time)
         # Load additional modules
         self.printer.load_object(config, "verify_heater %s" % (short_name,))
         self.printer.load_object(config, "pid_calibrate")
@@ -93,7 +95,9 @@ class Heater:
             self.printer.get_reactor().monotonic()) + 0.5 * self.pwm_delay
         if pwm_time < min_pwm_time:
             pwm_time = min_pwm_time
-        self.next_pwm_time = pwm_time + 0.5 * MAX_HEAT_TIME
+        pwm_window = min(0.5 * self.max_heat_time,
+                         self.max_heat_time - 3. * self.pwm_delay - 0.001)
+        self.next_pwm_time = pwm_time + max(0., pwm_window)
         self.last_pwm_value = value
         self.mcu_pwm.set_pwm(pwm_time, value)
     def temperature_callback(self, read_time, temp):
