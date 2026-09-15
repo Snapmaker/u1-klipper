@@ -12,6 +12,7 @@ class SensorAccelerometerIdentify:
         self.sensor_selected_name = config.get('sensor_selected', None)
 
         self.sensor_identified = None
+        self.sensor_identified_name = None
         self.sensor_selected = None
 
         self.printer.register_event_handler("klippy:connect", self._connect)
@@ -22,6 +23,7 @@ class SensorAccelerometerIdentify:
             if self.sensor_selected.check_devid():
                 logging.info(f"[{self.name}] Sensor {self.sensor_selected.name} selected and identified")
                 self.sensor_identified = self.sensor_selected
+                self.sensor_identified_name = self.sensor_selected_name
             else:
                 logging.error(f"[{self.name}] Sensor {self.sensor_selected.name} selected but not identified")
         else:
@@ -30,12 +32,18 @@ class SensorAccelerometerIdentify:
                 if sensor_obj is not None:
                     if sensor_obj.check_devid():
                         self.sensor_identified = sensor_obj
+                        self.sensor_identified_name = sensor
                         break
 
             if self.sensor_identified is None:
                 logging.error(f"[{self.name}] No sensor identified")
             else:
                 logging.info(f"[{self.name}] Sensor {self.sensor_identified.name} identified")
+
+    def get_status(self, eventtime):
+        return {
+            'sensor': self.sensor_identified_name if self.sensor_identified_name is not None else 'unknown',
+        }
 
 def load_config_prefix(config):
     return SensorAccelerometerIdentify(config)

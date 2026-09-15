@@ -90,8 +90,9 @@ timer_reset(void)
 }
 DECL_SHUTDOWN(timer_reset);
 
+// Renamed to avoid a symbol conflict
 void
-timer_init(void)
+armcm_timer_init(void)
 {
     // Enable Debug Watchpoint and Trace (DWT) for its 32bit timer
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
@@ -109,7 +110,7 @@ timer_init(void)
     timer_kick();
     irq_restore(flag);
 }
-DECL_INIT(timer_init);
+DECL_INIT(armcm_timer_init);
 
 static uint32_t timer_repeat_until;
 #define TIMER_IDLE_REPEAT_TICKS timer_from_us(500)

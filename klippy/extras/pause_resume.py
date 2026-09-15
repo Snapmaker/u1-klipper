@@ -85,8 +85,13 @@ class PauseResume:
     def cmd_PAUSE(self, gcmd):
         if self.print_stats is not None:
             if self.print_stats.state not in ['printing', 'paused']:
-                gcmd.respond_raw(f"!! Cannot pause while not printing: {self.print_stats.state}")
-                return
+                raise gcmd.error(message = f"!! Cannot pause while not printing: {self.print_stats.state}",
+                                action = 'none',
+                                id = 531,
+                                index = 0,
+                                code = 27,
+                                oneshot = 1,
+                                level = 1)
         if self.is_paused:
             gcmd.respond_raw(f"!! Print already paused")
             return
@@ -132,7 +137,13 @@ class PauseResume:
     def cmd_RESUME(self, gcmd):
         if self.print_stats is not None:
             if self.print_stats.state not in ['paused']:
-                raise gcmd.error(f"!! Cannot resume while not printing: {self.print_stats.state}")
+                raise gcmd.error(message = f"!! Cannot resume while not paused: {self.print_stats.state}",
+                                action = 'none',
+                                id = 531,
+                                index = 0,
+                                code = 26,
+                                oneshot = 1,
+                                level = 1)
 
         machine_state_manager = self.printer.lookup_object('machine_state_manager', None)
         if machine_state_manager is not None:

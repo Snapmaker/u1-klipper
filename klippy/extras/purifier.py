@@ -587,7 +587,7 @@ class Purifier:
 
             # Reset if temperature is above desired or timeout reached
             if ((self.average_temperature is not None and
-                 self.desired_chamber_temp > 0 and
+                 self.average_temperature > 0 and
                  self.average_temperature >= self.desired_chamber_temp) or
                 eventtime > self.preheat_check_timeout_time):
                 self._reset_preheat_state()
