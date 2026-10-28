@@ -358,6 +358,30 @@ defined):
 - `info.current_layer`: The current layer value of the last
   `SET_PRINT_STATS_INFO CURRENT_LAYER=<value>` G-Code command.
 
+## print_temperature_guard
+
+The following information is available in the `print_temperature_guard`
+object (this object is available if a
+[print_temperature_guard config section](Config_Reference.md#print_temperature_guard)
+is defined):
+- `protocol`: Currently 1.
+- `implementation`: Currently `u1-print-temperature-guard-v1`.
+- `job_token`: 64 hexadecimal characters identifying the current print
+  job, or null when no job is printing or paused. It changes on a new
+  job, when `print_stats` stops, after a firmware restart and when the
+  open file is replaced, even by one with the same name.
+- `activation_token`: Identifies the current activation of the active
+  extruder within the job, or null. It changes on a tool change, on a
+  resume and with every new job.
+- `filament_tokens`: Four entries, one per physical extruder: an
+  identifier of the loaded filament, or null when its presence is not
+  confirmed by an enabled filament motion sensor or its color or
+  material is unknown. Any observed change, runout or feed event gives
+  a new value, even if the filament returns to the previous one.
+- `last_result`: The answer of the last `SET_GUARDED_PRINT_TEMPERATURE`
+  command (`applied`, `replayed`, `reason`, `nonce`, `toolhead`,
+  `target`), or null.
+
 ## probe
 
 The following information is available in the

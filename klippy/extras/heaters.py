@@ -748,6 +748,35 @@ class PrinterHeaters:
                 self.active_heating_extruders.remove(heater_name)
             self.remove_pending_extruder(heater_name)
             heater.set_temp(temp)
+    def is_extruder_pending(self, heater_name):
+        return any(name == heater_name for name, _ in self.pending_extruders)
+    def try_set_extruder_temperature(self, heater, temp):
+        # Set an extruder target only if the concurrent heating budget
+        # admits it right now, with the admission rules of
+        # set_temperature(). It never waits, never queues a pending target,
+        # registers no lookahead callback and records nothing for power
+        # loss recovery, so it never yields. Returns False if it would have
+        # to wait or a native target for this extruder is already pending.
+        heater_name = heater.get_name()
+        if not heater_name.startswith('extruder') or temp <= 0:
+            return False
+        if self.is_extruder_pending(heater_name):
+            return False
+        if heater_name in self.active_heating_extruders:
+            heater.set_temp(temp)
+            return True
+        if len(self.active_heating_extruders) < self.max_heating_extruders:
+            self.active_heating_extruders.append(heater_name)
+            try:
+                heater.set_temp(temp)
+            except:
+                self.active_heating_extruders.remove(heater_name)
+                raise
+            return True
+        if heater.smoothed_temp + INACTIVE_EXTRUDER_TEMP_DELTA >= temp:
+            heater.set_temp(temp)
+            return True
+        return False
     cmd_TEMPERATURE_WAIT_help = "Wait for a temperature on a sensor"
     def cmd_TEMPERATURE_WAIT(self, gcmd):
         sensor_name = gcmd.get('SENSOR')

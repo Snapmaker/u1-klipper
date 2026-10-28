@@ -1593,6 +1593,33 @@ Marlin/RepRapFirmware compatible M486 G-Code macro.
 [exclude_object]
 ```
 
+### [print_temperature_guard]
+
+Lets an external client (a print farm manager, a dashboard) change the
+working temperature of one extruder during a print, only if the job,
+the filament, the physically active extruder and the firmware state are
+still those the client observed. The checks and the heater update run
+in the same reactor turn as the command; nothing is queued for later.
+It never wraps M104/M109 and never changes the pause program or the
+standby temperatures, so a later native command can still change the
+target. See the [command reference](G-Codes.md#print_temperature_guard)
+and the [status reference](Status_Reference.md#print_temperature_guard).
+Add or remove this section only while the printer is idle.
+
+```
+[print_temperature_guard]
+#max_delta: 30
+#   The largest difference, in Celsius, between the requested target
+#   and the working temperature that the print assigns to the extruder.
+#   The default is 30.
+#max_temp_margin: 10
+#   The requested target must stay this many degrees Celsius below the
+#   heater's max_temp. The default is 10.
+```
+
+The target set by this module is not recorded for power loss recovery,
+which restores the print's own temperature.
+
 ## Resonance compensation
 
 ### [input_shaper]

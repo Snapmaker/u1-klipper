@@ -943,6 +943,42 @@ slicer start gcode section and `SET_PRINT_STATS_INFO [CURRENT_LAYER=
 <current_layer>]` at the layer change gcode section to pass layer
 information from your slicer to Klipper.
 
+### [print_temperature_guard]
+
+The following command is available when the
+[print_temperature_guard config section](Config_Reference.md#print_temperature_guard)
+is enabled.
+
+#### SET_GUARDED_PRINT_TEMPERATURE
+`SET_GUARDED_PRINT_TEMPERATURE TOOL=<1-4> TARGET=<temperature>
+EXPECTED=<temperature> JOB=<token> FILAMENT=<token> ACTIVATION=<token>
+POLICY=<id> NONCE=<id>`: Sets the target of the physical extruder `TOOL`
+to `TARGET` only when, at execution time: the print is running, is not
+paused, has no pause requested and is not running its end-of-print
+actions; there is no firmware exception; `TOOL` is the grabbed active
+extruder and every other extruder is parked; its current target is
+`EXPECTED` or `TARGET` (never a standby or off target); `EXPECTED` is
+the single working temperature that the print task assigns to that
+extruder; `TARGET` is within the heater and extrusion limits, at most
+`max_delta` from `EXPECTED` and `max_temp_margin` below `max_temp`; the
+concurrent extruder heating budget admits it right away (it is never
+queued); and `JOB`, `FILAMENT` (the token of extruder `TOOL`) and
+`ACTIVATION` still match the
+[status](Status_Reference.md#print_temperature_guard). All parameters
+are required and may appear only once. `JOB`, `FILAMENT` and
+`ACTIVATION` are 64 lowercase hexadecimal characters, `POLICY` and
+`NONCE` are 32 lowercase hexadecimal characters chosen by the client. A
+`POLICY` applies at most once per activation of the extruder: a tool
+change or a resume needs a fresh `ACTIVATION` token. Repeating a
+`NONCE` with the same parameters returns its earlier result, marked
+`replayed`, without writing the heater again (the last 256 are kept);
+reusing it with other parameters is refused. The command answers with
+one JSON line, also kept in `last_result`: `applied`, `replayed`,
+`reason`, `nonce`, `toolhead` and `target`. `applied` refers to the
+commanded target, not to the measured temperature. A later native
+command, such as the next M104 of the print, can still change the
+target.
+
 ### [probe]
 
 The following commands are available when a
