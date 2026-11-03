@@ -228,6 +228,7 @@ class FM175XXReader:
 
         self.__card_info_read_flag = 0
         self.__card_info_clear_flag = 0
+        self._first_scan_fail_fast = False
         self.__stop_event = threading.Event()
         self.__card_info_deal_cb = None
         self.__picc_a = Fm175xxPiccMetaData()
@@ -882,6 +883,8 @@ class FM175XXReader:
                 retry_times_3 = 1
                 self.__self_test_stage = FM175XX_SELF_TEST_STAGE_DOING
 
+            first_scan = self._first_scan_fail_fast
+
             # Traverse all channels
             for ch in range(FM175XX_CHANNEL_NUMS):
                 if self.__stop_event.is_set():
@@ -897,6 +900,7 @@ class FM175XXReader:
                 card_op_result = FM175XX_ERR
                 card_type = FM175XX_MIFARE_CARD_TYPE_UNKNOWN
                 card_data = None
+                no_card = False
 
                 self.__select_fm175xx_obj(ch)
                 self.__select_channel(ch)
@@ -924,6 +928,10 @@ class FM175XXReader:
                                 break
                             ret = self.__reader_a_activate()
                             if (FM175XX_OK == ret):
+                                break
+                            if (first_scan and ret == FM175XX_CARD_WAKEUP_ERR
+                                    and retry_2 >= 2):
+                                no_card = True
                                 break
                             self.__stop_event.wait(0.15)
                         if (FM175XX_OK != ret):
@@ -972,6 +980,9 @@ class FM175XXReader:
                     # disable carrier wave
                     self.__set_carrier_wave(FM175XX_CW_DISABLE)
 
+                    if no_card:
+                        break
+
                     if (self.__card_info_read_flag & (1 << ch)) == 0:
                         break
                     else:
@@ -986,6 +997,8 @@ class FM175XXReader:
 
                 self.__card_info_read_flag &= ~(1 << ch) & 0xFFFFFFFF
 
+            if first_scan:
+                self._first_scan_fail_fast = False
             self.__stop_event.wait(0.2)
 
     def _hkdf_create_key(self, ikm, salt, key_type='a'):
@@ -1014,6 +1027,9 @@ class FM175XXReader:
             keys.append(okm_list)
 
         return keys
+
+    def enable_first_scan_fail_fast(self) -> None:
+        self._first_scan_fail_fast = True
 
     # Register a callback function for protocol parsing
     def register_cb_2_card_info_deal(self, cb) -> None:

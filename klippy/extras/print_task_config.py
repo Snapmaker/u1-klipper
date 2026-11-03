@@ -902,7 +902,7 @@ class PrintTaskConfig:
     def cmd_INNER_AUTO_REPLENISH_FILAMENT(self, gcmd):
         self.perform_auto_replenish = False
         if self.print_task_config['auto_replenish_filament'] == False:
-            logging.info("[print_task_config] auto_replenish_filament is disabled.")
+            logging.info("[print_task_config] auto_replenish failed: feature disabled")
             return
         else:
             logging.info("[print_task_config] try to auto replenish filament...")
@@ -973,37 +973,54 @@ class PrintTaskConfig:
                     extruder_obj = self.printer.lookup_object(f"extruder{i}", None)
                 if extruder_obj is None:
                     continue
-                else:
-                    if extruder_obj.nozzle_diameter != current_extruder_nozzle_diameter:
-                        continue
-                    if extruder_obj.nozzle_volume_type != current_extruder_nozzle_volume_type:
-                        continue
+
+                if extruder_obj.nozzle_diameter != current_extruder_nozzle_diameter:
+                    logging.info(f"[print_task_config] auto_replenish failed[{i}]: nozzle diameter mismatch")
+                    continue
+                if extruder_obj.nozzle_volume_type != current_extruder_nozzle_volume_type:
+                    logging.info(f"[print_task_config] auto_replenish failed[{i}]: nozzle volume type mismatch")
+                    continue
+                if self.print_task_config['filament_vendor'][i] == 'NONE' or self.print_task_config['filament_vendor'][i] == "" or \
+                        self.print_task_config['filament_vendor'][i] == None or \
+                        self.print_task_config['filament_vendor'][i] != self.filament_info_backup['filament_vendor'][current_extruder] or \
+                        self.print_task_config['filament_type'][i] != self.filament_info_backup['filament_type'][current_extruder] or \
+                        self.print_task_config['filament_sub_type'][i] != self.filament_info_backup['filament_sub_type'][current_extruder]:
+                    logging.info(f"[print_task_config] auto_replenish failed[{i}]: filament type mismatch")
+                    continue
 
                 runout_sensor = self.printer.lookup_object(f"filament_motion_sensor e{i}_filament", None)
                 e_obj = filament_feed_infos.get(f'extruder{i}', None)
                 if e_obj is None or runout_sensor is None:
                     continue
 
-                if e_obj['channel_state'] == filament_feed.FEED_STA_LOAD_FINISH or \
-                        (e_obj['module_exist'] == True and e_obj['disable_auto'] == False and \
-                         e_obj['filament_detected'] == True and \
-                         runout_sensor.get_status(0)['enabled'] == True):
-                    if self.print_task_config['filament_vendor'][i] != 'NONE' and \
-                            self.print_task_config['filament_vendor'][i] == self.filament_info_backup['filament_vendor'][current_extruder] and \
-                            self.print_task_config['filament_type'][i] == self.filament_info_backup['filament_type'][current_extruder] and \
-                            self.print_task_config['filament_sub_type'][i] == self.filament_info_backup['filament_sub_type'][current_extruder]:
-                        if self.print_task_config['filament_color_multi'][i] == self.filament_info_backup['filament_color_multi'][current_extruder]:
-                            # Exact match (regardless of single or multi color) - highest priority
-                            replenish_extruder = i
-                            break
-                        elif self.print_task_config['replenish_ignore_color'] == True:
-                            # Weighted RGB distance match against the first color
-                            color1 = self.print_task_config['filament_color_multi'][i]['colors'][0]
-                            color2 = self.filament_info_backup['filament_color_multi'][current_extruder]['colors'][0]
-                            distance = self._weighted_rgb_distance(color1, color2)
-                            if best_match_distance is None or distance < best_match_distance:
-                                best_match_distance = distance
-                                best_match_extruder = i
+                if e_obj['channel_state'] != filament_feed.FEED_STA_LOAD_FINISH:
+                    if e_obj['module_exist'] == False:
+                        logging.info(f"[print_task_config] auto_replenish failed[{i}]: feed module not exist")
+                        continue
+                    if e_obj['disable_auto'] == True:
+                        logging.info(f"[print_task_config] auto_replenish failed[{i}]: auto feeding disabled")
+                        continue
+                    if e_obj['filament_detected'] == False:
+                        logging.info(f"[print_task_config] auto_replenish failed[{i}]: filament not inserted")
+                        continue
+                    if runout_sensor.get_status(0)['enabled'] == False:
+                        logging.info(f"[print_task_config] auto_replenish failed[{i}]: runout not enabled")
+                        continue
+
+                if self.print_task_config['filament_color_multi'][i] == self.filament_info_backup['filament_color_multi'][current_extruder]:
+                    # Exact match (regardless of single or multi color) - highest priority
+                    replenish_extruder = i
+                    break
+                elif self.print_task_config['replenish_ignore_color'] == True:
+                    # Weighted RGB distance match against the first color
+                    color1 = self.print_task_config['filament_color_multi'][i]['colors'][0]
+                    color2 = self.filament_info_backup['filament_color_multi'][current_extruder]['colors'][0]
+                    distance = self._weighted_rgb_distance(color1, color2)
+                    if best_match_distance is None or distance < best_match_distance:
+                        best_match_distance = distance
+                        best_match_extruder = i
+                else:
+                    logging.info(f"[print_task_config] auto_replenish failed[{i}]: color mismatch")
 
         if replenish_extruder is None and best_match_extruder is not None:
             replenish_extruder = best_match_extruder
