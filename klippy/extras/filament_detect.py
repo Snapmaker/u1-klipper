@@ -15,6 +15,10 @@ FILAMENT_DT_STATE_SELF_TESTING                  = 2
 FILAMENT_DT_CHANNEL_NUMS                        = 4
 FILAMENT_DT_CONFIG_FILE                         = "filament_detect.json"
 
+FILAMENT_DT_STARTUP_DETECT_DELAY                = 1.0
+FILAMENT_DT_STARTUP_DETECT_PERIOD               = 0.5
+FILAMENT_DT_STARTUP_DETECT_TIMEOUT              = 2.5
+
 DEFAULT_FILAMENT_DT_CONFIG = {
     'startup_stay': False
 }
@@ -33,6 +37,8 @@ class FilamentDetector:
         self._channel_nums = FILAMENT_DT_CHANNEL_NUMS
         self._filament_info = [dict(filament_protocol.FILAMENT_INFO_STRUCT) for i in range(self._channel_nums)]
         self._state = [FILAMENT_DT_STATE_IDLE for i in range(self._channel_nums)]
+        self._startup_detect_done = [False for i in range(self._channel_nums)]
+        self._startup_detect_deadline = 0.
         self._notify_data_update_cb = []
 
         self.filament_feed_objects = None
@@ -57,10 +63,25 @@ class FilamentDetector:
             self._fm175xx_reader.register_cb_2_card_info_deal(self._fm175xx_card_info_deal_callback)
 
         if self._config['startup_stay'] == False:
-            for i in range(self._channel_nums):
-                filament_sensor = self.printer.lookup_object('filament_motion_sensor e%d_filament' % (i))
-                if filament_sensor.get_status(0)['filament_detected'] and filament_sensor.get_status(0)['enabled']:
-                    self.request_update_filament_info(i)
+            if self._fm175xx_reader is not None:
+                self._fm175xx_reader.enable_first_scan_fail_fast()
+            self._startup_detect_deadline = self.reactor.monotonic() + FILAMENT_DT_STARTUP_DETECT_TIMEOUT
+            self.reactor.register_timer(self._startup_detect,
+                                        self.reactor.monotonic() + FILAMENT_DT_STARTUP_DETECT_DELAY)
+
+    def _startup_detect(self, eventtime):
+        for i in range(self._channel_nums):
+            if self._startup_detect_done[i]:
+                continue
+            filament_sensor = self.printer.lookup_object('filament_motion_sensor e%d_filament' % (i), None)
+            if filament_sensor is None:
+                continue
+            if filament_sensor.get_status(0)['filament_detected'] and filament_sensor.get_status(0)['enabled']:
+                self._startup_detect_done[i] = True
+                self.request_update_filament_info(i)
+        if eventtime < self._startup_detect_deadline:
+            return eventtime + FILAMENT_DT_STARTUP_DETECT_PERIOD
+        return self.reactor.NEVER
 
     def _feed_port_evt_handle(self, channel, detect):
         filament_sensor = self.printer.lookup_object('filament_motion_sensor e%d_filament' % (channel))

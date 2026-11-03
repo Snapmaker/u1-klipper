@@ -147,6 +147,8 @@ class InputShaper:
         self.shapers[1].params.shaper_type = self._config['axis_y']['type']
         self.shapers[1].params.shaper_freq = self._config['axis_y']['freq']
         self.shapers[1].params.damping_ratio = self._config['axis_y']['damping_ratio']
+        for shaper in self.shapers:
+            shaper.n, shaper.A, shaper.T = shaper.params.get_shaper()
         self._update_input_shaping(error=self.printer.config_error)
 
     def _save_input_shaper_params(self):

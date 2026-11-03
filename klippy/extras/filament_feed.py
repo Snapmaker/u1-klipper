@@ -679,38 +679,24 @@ class FilamentFeed:
         homed_axes_list = self.toolhead.get_status(curtime)['homed_axes']
         return ('x' in homed_axes_list and 'y' in homed_axes_list)
 
-    def _get_filament_temp(self, channel):
+    def _get_filament_parameters(self, channel):
         print_task_config = self.printer.lookup_object('print_task_config', None)
         filament_parameters = self.printer.lookup_object('filament_parameters', None)
         extruder_obj = self.printer.lookup_object("extruder", None)
         if self.filament_ch[channel] != 0:
             extruder_obj = self.printer.lookup_object(f"extruder{self.filament_ch[channel]}", None)
         if print_task_config is None or filament_parameters is None or extruder_obj is None:
-            return FEED_FILAMENT_TEMP_DEFAULT
+            return None
 
         status = print_task_config.get_status()
-        return filament_parameters.get_load_temp(
+        filament_parameters = filament_parameters.get_filament_parameters(
                 status['filament_vendor'][self.filament_ch[channel]],
                 status['filament_type'][self.filament_ch[channel]],
                 status['filament_sub_type'][self.filament_ch[channel]],
                 extruder_obj.nozzle_diameter,
                 extruder_obj.nozzle_volume_type)
-    def _get_filament_soft(self, channel):
-        print_task_config = self.printer.lookup_object('print_task_config', None)
-        filament_parameters = self.printer.lookup_object('filament_parameters', None)
-        extruder_obj = self.printer.lookup_object("extruder", None)
-        if self.filament_ch[channel] != 0:
-            extruder_obj = self.printer.lookup_object(f"extruder{self.filament_ch[channel]}", None)
-        if print_task_config is None or filament_parameters is None or extruder_obj is None:
-            return False
 
-        status = print_task_config.get_status()
-        return filament_parameters.get_is_soft(
-                status['filament_vendor'][self.filament_ch[channel]],
-                status['filament_type'][self.filament_ch[channel]],
-                status['filament_sub_type'][self.filament_ch[channel]],
-                extruder_obj.nozzle_diameter,
-                extruder_obj.nozzle_volume_type)
+        return filament_parameters
 
     def _hang_neutral(self, channel):
         self.reactor.pause(self.reactor.monotonic() + 0.105)
@@ -779,8 +765,14 @@ class FilamentFeed:
         self.channel_error[ch] = FEED_OK
         self.exception_code[ch] = 0
 
-        filament_feed_temp = self._get_filament_temp(ch)
-        filament_soft = self._get_filament_soft(ch)
+        filament_parameters = self._get_filament_parameters(ch)
+        filament_load_temp = FEED_FILAMENT_TEMP_DEFAULT
+        filament_unload_temp = FEED_FILAMENT_TEMP_DEFAULT
+        filament_soft = False
+        if filament_parameters != None:
+            filament_load_temp = filament_parameters['load_temp']
+            filament_unload_temp = filament_parameters['unload_temp']
+            filament_soft = filament_parameters['is_soft']
 
         motor_dir = FEED_MOTOR_DIR_A
         if ch == FEED_CHANNEL_2:
@@ -978,7 +970,7 @@ class FilamentFeed:
                         self.exception_code[ch] = 33
                         raise ValueError('logic error!')
 
-                    self.gcode.run_script_from_command("M104 S%d T%d A0\r\n" % (filament_feed_temp - 70, self.filament_ch[ch]))
+                    self.gcode.run_script_from_command("M104 S%d T%d A0\r\n" % (filament_load_temp - 70, self.filament_ch[ch]))
 
                     # home
                     try:
@@ -1000,9 +992,9 @@ class FilamentFeed:
                         raise
 
                     if is_last_preload_normal:
-                        self.gcode.run_script_from_command("M104 S%d\r\n" % (filament_feed_temp))
+                        self.gcode.run_script_from_command("M104 S%d\r\n" % (filament_load_temp))
                     else:
-                        self.gcode.run_script_from_command("M104 S%d\r\n" % (filament_feed_temp - 50))
+                        self.gcode.run_script_from_command("M104 S%d\r\n" % (filament_load_temp - 50))
 
                     # feed filament
                     self._set_channel_state(ch, FEED_STA_LOAD_FEEDING)
@@ -1098,7 +1090,7 @@ class FilamentFeed:
                             self._hang_neutral(ch)
                             raise ValueError('logic error!')
 
-                    self.gcode.run_script_from_command("M104 S%d\r\n" % (filament_feed_temp))
+                    self.gcode.run_script_from_command("M104 S%d\r\n" % (filament_load_temp))
                     try:
                         self.toolhead.wait_moves()
                         self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION\r\n")
@@ -1110,7 +1102,7 @@ class FilamentFeed:
                     # heating
                     self._set_channel_state(ch, FEED_STA_LOAD_HEATING)
                     try:
-                        self.gcode.run_script_from_command("M109 S%d\r\n" % (filament_feed_temp))
+                        self.gcode.run_script_from_command("M109 S%d\r\n" % (filament_load_temp))
                     except:
                         self.channel_error[ch] = FEED_ERR_HEAT
                         raise
@@ -1241,7 +1233,7 @@ class FilamentFeed:
                     try:
                         self.toolhead.wait_moves()
                         self.gcode.run_script_from_command("INNER_FLUSH_FILAMENT TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f\r\n" %
-                                            (filament_feed_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
+                                            (filament_load_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
                         self.toolhead.wait_moves()
                     except:
                         self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE
@@ -1314,7 +1306,7 @@ class FilamentFeed:
                         # heat
                         try:
                             self._set_channel_state(ch, FEED_STA_UNLOAD_HEATING)
-                            self.gcode.run_script_from_command("M109 S%d\r\n" % (filament_feed_temp))
+                            self.gcode.run_script_from_command("M109 S%d\r\n" % (filament_unload_temp))
                             self.toolhead.wait_moves()
                         except:
                             self.channel_error[ch] = FEED_ERR_HEAT
@@ -1343,7 +1335,7 @@ class FilamentFeed:
                             self._set_channel_state(ch, FEED_STA_UNLOAD_DOING)
                             self.toolhead.wait_moves()
                             self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f\r\n"
-                                                            % (filament_feed_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
+                                                            % (filament_unload_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
                             self.toolhead.wait_moves()
                         except:
                             self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE
@@ -1409,7 +1401,7 @@ class FilamentFeed:
                         # heat
                         try:
                             self._set_channel_state(ch, FEED_STA_UNLOAD_HEATING)
-                            self.gcode.run_script_from_command("M109 S%d\r\n" % (filament_feed_temp))
+                            self.gcode.run_script_from_command("M109 S%d\r\n" % (filament_unload_temp))
                             self.toolhead.wait_moves()
                         except:
                             self.channel_error[ch] = FEED_ERR_HEAT
@@ -1419,7 +1411,7 @@ class FilamentFeed:
                             self._set_channel_state(ch, FEED_STA_UNLOAD_DOING)
                             self.toolhead.wait_moves()
                             self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f\r\n"
-                                                            % (filament_feed_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
+                                                            % (filament_unload_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
                             self.toolhead.wait_moves()
                         except:
                             self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE
@@ -1501,7 +1493,7 @@ class FilamentFeed:
                         # heat
                         try:
                             self._set_channel_state(ch, FEED_STA_MANUAL_HEATING, True)
-                            self.gcode.run_script_from_command("M109 S%d\r\n" % (filament_feed_temp))
+                            self.gcode.run_script_from_command("M109 S%d\r\n" % (filament_load_temp))
                             self.toolhead.wait_moves()
                         except:
                             self.channel_error[ch] = FEED_ERR_HEAT
@@ -1512,7 +1504,7 @@ class FilamentFeed:
                             self._set_channel_state(ch, FEED_STA_MANUAL_EXTRUDING)
                             self.toolhead.wait_moves()
                             self.gcode.run_script_from_command("INNER_MANUAL_FEED_STAGE_EXTRUDE TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f\r\n" %
-                                                               (filament_feed_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
+                                                               (filament_load_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
                             self.toolhead.wait_moves()
                         except:
                             self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE
@@ -1537,7 +1529,7 @@ class FilamentFeed:
                             self.toolhead.wait_moves()
                             self._set_channel_state(ch, FEED_STA_MANUAL_FLUSHING, True)
                             self.gcode.run_script_from_command("INNER_MANUAL_FEED_STAGE_FLUSH TEMP=%d SOFT=%d NOZZLE_DIAMETER=%f\r\n" %
-                                                (filament_feed_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
+                                                (filament_load_temp, int(filament_soft), self.toolhead.get_extruder().nozzle_diameter))
                             self.toolhead.wait_moves()
                         except:
                             self.channel_error[ch] = FEED_ERR_CUSTOM_GCODE
