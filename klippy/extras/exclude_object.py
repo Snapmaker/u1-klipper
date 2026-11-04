@@ -55,6 +55,7 @@ class ExcludeObject:
             self.last_position_e = {}
             self.last_position_e_extruded = {}
             self.last_position_e_excluded = {}
+            self.last_tx_position = None
 
             self.get_position()
             self.last_position_extruded[:] = self.last_position
@@ -151,6 +152,14 @@ class ExcludeObject:
     def get_position(self):
         offset = self._get_extrusion_offsets()
         pos = self.next_transform.get_position()
+        if self.last_tx_position is None or any(
+                abs(pos[i] - self.last_tx_position[i]) > 1e-6 for i in range(3)):
+            # The head is not where this transform last sent it (a manual_move
+            # park, homing, a tool change): the skipped-object XYZ offset no
+            # longer describes where it is, so restart from the real position.
+            offset[0] = offset[1] = offset[2] = 0.
+            self.last_position_extruded[:3] = pos[:3]
+            self.last_tx_position = pos[:3]
         self._get_last_position_e()
         for i in range(4):
             self.last_position[i] = pos[i] + offset[i]
@@ -205,6 +214,7 @@ class ExcludeObject:
         for i in range(4):
             tx_pos[i] = newpos[i] - offset[i]
         self.next_transform.move(tx_pos, speed)
+        self.last_tx_position = tx_pos[:3]
 
     def _ignore_move(self, newpos, speed):
         offset = self._get_extrusion_offsets()
