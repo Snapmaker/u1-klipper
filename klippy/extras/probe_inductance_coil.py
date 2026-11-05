@@ -509,28 +509,41 @@ class ProbeCommandHelper:
                 if params['save_info']:
                     vsd = self.printer.lookup_object('virtual_sdcard', None)
                     if vsd is None:
-                        gcmd.respond_info("No virtual_sdcard dir to save extruder offset data")
+                        gcmd.respond_info(
+                            "No virtual_sdcard dir to save extruder offset data")
                         logdir = '/tmp/calibration_data'
                     else:
-                        logdir = f'{vsd.sdcard_dirname}/calibration_data'
+                        logdir = "%s/calibration_data" % (vsd.sdcard_dirname,)
                     ename = toolhead.get_extruder().get_name()
                     if not os.path.exists(logdir):
-                        os.makedirs(logdir)
+                        try:
+                            os.makedirs(logdir)
+                        except OSError:
+                            pass
 
-                    content1 = f'{center[0]:.6f}, {center[1]:.6f}, {center[2]:.6f}\n'
+                    content1 = "%.6f, %.6f, %.6f\n" % (
+                        center[0], center[1], center[2])
                     try:
-                        queuefile.async_append_file(f'{logdir}/{ename}_xyz_offset_data.txt', content1)
+                        queuefile.async_append_file(
+                            "%s/%s_xyz_offset_data.txt" % (logdir, ename),
+                            content1)
                     except Exception as e:
-                        logging.exception(f"Failed to append to file {ename}_xyz_offset_data.txt: {e}")
+                        logging.exception(
+                            "Failed to append to %s_xyz_offset_data.txt: %s"
+                            % (ename, str(e)))
 
                     date = time.strftime("%Y-%m-%d %H:%M:%S")
-                    content2 = f'{ename}({date}): {center[0]:.6f}, {center[1]:.6f}, {center[2]:.6f}\n'
+                    content2 = "%s(%s): %.6f, %.6f, %.6f\n" % (
+                        ename, date, center[0], center[1], center[2])
                     if ename == 'extruder3':
                         content2 += '\n'
                     try:
-                        queuefile.async_append_file(f'{logdir}/xyz_offset_data.txt', content2)
+                        queuefile.async_append_file(
+                            "%s/xyz_offset_data.txt" % (logdir,), content2)
                     except Exception as e:
-                        logging.exception(f"Failed to append to xyz_offset_data.txt: {e}")
+                        logging.exception(
+                            "Failed to append to xyz_offset_data.txt: %s"
+                            % (str(e),))
             return center
         except ExtruderOffsetCalAbort as e:
             gcmd.respond_info("ExtruderOffsetCal Abort Success")
@@ -726,6 +739,16 @@ class ProbeSessionHelper:
         # horizontal_dist = gcmd.get_float("HORIZONTAL_DIST", 2.0, minval=1.0)
         # probe_xyz_mode = gcmd.get_int("PROBE_XYZ_MODE", RECTANGLE_PROBE_MODE, minval=RECTANGLE_PROBE_MODE, maxval=CIRCLE_PROBE_MODE)
         log_file = gcmd.get("LOG_FILE", None)
+        if log_file is not None:
+            filename = log_file.strip()
+            clean_name = os.path.basename(filename)
+            is_invalid = (not clean_name or clean_name != filename
+                          or any(sep in filename
+                                 for sep in ('/', '\\', '..', '\0')))
+            if is_invalid:
+                raise gcmd.error(
+                    "probe_inductance_coil: Invalid log file name '%s' - "
+                    "path traversal not allowed" % (filename,))
         xy_start_pos = gcmd.get_float("XY_START_POS", -6)
         save_info = gcmd.get_int("SAVE_INFO", 0)
         points = gcmd.get_int("PROBE_POINTS", 6)
@@ -917,13 +940,14 @@ class ProbeSessionHelper:
                     params['sample_trig_invert']
                 )
         max_accel_bak = toolhead.max_accel
-        z_accel = toolhead.kin.max_z_accel
+        z_accel = getattr(toolhead.kin, 'max_z_accel', None)
         try:
             if speed is None:
                 speed = params['probe_speed']
             if params['probe_accel'] != max_accel_bak:
                 toolhead.set_accel(params['probe_accel'])
-            toolhead.kin.max_z_accel = params['probe_z_accel']
+            if z_accel is not None:
+                toolhead.kin.max_z_accel = params['probe_z_accel']
             epos = self.mcu_probe.probing_move(pos, speed)
         except self.printer.command_error as e:
             reason = str(e)
@@ -933,7 +957,8 @@ class ProbeSessionHelper:
         finally:
             if toolhead.max_accel != max_accel_bak:
                 toolhead.set_accel(max_accel_bak)
-            toolhead.kin.max_z_accel = z_accel
+            if z_accel is not None:
+                toolhead.kin.max_z_accel = z_accel
 
         # Allow axis_twist_compensation to update results
         self.printer.send_event("probe:update_results", epos)
@@ -987,27 +1012,57 @@ class ProbeSessionHelper:
                 positions = []
             # Retract
             if len(positions) < sample_count:
-                probe_positions[params['samples_axis']] = pos[params['samples_axis']] + params['sample_retract_dist'] * params['samples_retract_dir']
+                saxis = params['samples_axis']
+                retract = (params['sample_retract_dist'] *
+                           params['samples_retract_dir'])
+                probe_positions[saxis] = pos[saxis] + retract
                 toolhead.manual_move(probe_positions, params['lift_speed'])
         # check if need discard samples data
         if discard > 0:
-            sorted_pos = sorted(positions, key=lambda positions: positions[params['samples_axis']])
+            sorted_pos = sorted(positions,
+                                key=lambda p: p[params['samples_axis']])
             filter_pos = sorted_pos[discard: -discard]
         else:
             filter_pos = positions
         # save result for slow speed
-        if params.get('log_file') != None:
-            logdir = '/userdata/gcodes/calibration_data'
-            if not os.path.exists(logdir):
-                os.makedirs(logdir)
-            content = ""
-            for p in filter_pos:
-                content += f'{p[0]:.6f}, {p[1]:.6f}, {p[2]:.6f}\n'
-            content += ' , , \n'
-            try:
-                queuefile.async_append_file(f'{logdir}/{params["log_file"]}', content)
-            except Exception as e:
-                logging.exception(f"Failed to append to file {params['log_file']}: {e}")
+        if params.get('log_file') is not None:
+            clean_name = os.path.basename(params['log_file'].strip())
+            is_invalid = (not clean_name or clean_name != params['log_file']
+                          or any(sep in params['log_file']
+                                 for sep in ('/', '\\', '..', '\0')))
+            if is_invalid:
+                logging.error(
+                    "probe_inductance_coil: Invalid log file '%s' - "
+                    "skipping log write" % (params['log_file'],))
+            else:
+                vsd = self.printer.lookup_object('virtual_sdcard', None)
+                if vsd is not None and vsd.sdcard_dirname:
+                    logdir = os.path.join(vsd.sdcard_dirname,
+                                          'calibration_data')
+                else:
+                    logdir = '/tmp/calibration_data'
+                if not os.path.exists(logdir):
+                    try:
+                        os.makedirs(logdir)
+                    except OSError:
+                        pass
+                logfile = os.path.abspath(os.path.join(logdir, clean_name))
+                base_dir = os.path.abspath(logdir)
+                if not logfile.startswith(base_dir + os.sep):
+                    logging.error(
+                        "probe_inductance_coil: Security violation: "
+                        "log file path escapes calibration directory: %s"
+                        % (logfile,))
+                else:
+                    content = ""
+                    for p in filter_pos:
+                        content += "%.6f, %.6f, %.6f\n" % (p[0], p[1], p[2])
+                    content += " , , \n"
+                    try:
+                        queuefile.async_append_file(logfile, content)
+                    except Exception as e:
+                        logging.exception("Failed to append to file %s: %s"
+                                          % (logfile, str(e)))
         # Calculate result
         epos = calc_probe_z_average(filter_pos, params['samples_result'], params['samples_axis'])
         self.results.append(epos)

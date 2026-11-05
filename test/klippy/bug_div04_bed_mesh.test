@@ -1,0 +1,6 @@
+# Test case for BUG-DIV-04: Division by Zero in bed_mesh get_position()
+CONFIG bug_div04_bed_mesh.cfg
+DICTIONARY simulator.dict
+
+BED_MESH_PROFILE LOAD=default
+M114

@@ -1,0 +1,7 @@
+# Test case for BUG-SEC-03: Path Traversal in probe_inductance_coil LOG_FILE
+CONFIG bug_sec03_probe_inductance_coil.cfg
+DICTIONARY simulator.dict
+SHOULD_FAIL
+
+# Attempt path traversal via LOG_FILE in PROBE_ACCURACY
+PROBE_ACCURACY SAFETY_CHECK=0 LOG_FILE=../../evil_log.txt

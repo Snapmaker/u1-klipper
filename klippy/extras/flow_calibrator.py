@@ -77,10 +77,11 @@ class FlowCalcClient:
             try:
                 header['os_count'] = int(calc_mode_params['os_count'])
             except Exception:
-                logging.error(f"Invalid calc_mode_params: {calc_mode_params}\r\n")
+                logging.error("Invalid calc_mode_params: %s\r\n"
+                              % (calc_mode_params,))
                 header['os_count'] = 5
 
-        logging.info(f"[flow_calibrator] Sending request: {header}")
+        logging.info("[flow_calibrator] Sending request: %s" % (header,))
 
         header_bytes = json.dumps(header).encode('utf-8')
 
@@ -112,17 +113,31 @@ class FlowCalcClient:
         error = [None]
 
         def _do_io():
+            req_fd = None
+            resp_fd = None
             try:
-                req_fd = os.open(self.REQ_PIPE, os.O_WRONLY)
-                self._write_request(req_fd, pt, freq, accel_time,
-                                    loop, slowv, fastv, drop1, drop2,
-                                    calc_mode, calc_mode_params)
-                os.close(req_fd)
+                try:
+                    req_fd = os.open(self.REQ_PIPE, os.O_WRONLY)
+                    self._write_request(req_fd, pt, freq, accel_time,
+                                        loop, slowv, fastv, drop1, drop2,
+                                        calc_mode, calc_mode_params)
+                finally:
+                    if req_fd is not None:
+                        try:
+                            os.close(req_fd)
+                        except OSError:
+                            pass
 
-                resp_fd = os.open(self.RESP_PIPE, os.O_RDONLY)
-                response = self._read_response(resp_fd)
-                os.close(resp_fd)
-                result[0] = response
+                try:
+                    resp_fd = os.open(self.RESP_PIPE, os.O_RDONLY)
+                    response = self._read_response(resp_fd)
+                    result[0] = response
+                finally:
+                    if resp_fd is not None:
+                        try:
+                            os.close(resp_fd)
+                        except OSError:
+                            pass
             except Exception as e:
                 error[0] = e
 
@@ -131,14 +146,17 @@ class FlowCalcClient:
         thread.join(timeout=self.TIMEOUT)
 
         if thread.is_alive():
-            raise FlowCalcError("Timeout communicating with flow calculator server")
+            raise FlowCalcError(
+                "Timeout communicating with flow calculator server")
         if error[0] is not None:
             raise FlowCalcError(str(error[0]))
 
         response = result[0]
-        logging.info(f"[flow_calibrator] Response: {response}\r\n")
+        logging.info("[flow_calibrator] Response: %s\r\n" % (response,))
         if response.get('status') != 'ok':
-            raise FlowCalcError(response.get('message', 'Unknown error from flow calculator'))
+            raise FlowCalcError(
+                response.get('message',
+                             'Unknown error from flow calculator'))
 
         if calc_mode == AERA_CALC_MODE_OS:
             return (float(response['decel_result']),
@@ -228,17 +246,27 @@ class AccelTimeQueryHelper:
                 os.nice(20)
             except:
                 pass
-            f = open(filename, 'w+')
-            f.write("time, duration, start speed, accel\n")
-            for t, d, sv, a in samples:
-                if slowv is None and fastv is None:
-                    f.write("%.4f,%.4f,%.4f,%.4f\n" % (t,d,sv,a))
-                    continue
-                if slowv is not None and fastv is not None:
-                    if abs(sv - slowv) >= 0.00001 and abs(sv - fastv) >= 0.00001:
-                        continue
-                f.write("%.4f,%.4f,%.4f,%.4f\n" % (t,d,sv,a))
-            f.close()
+            try:
+                parent_dir = os.path.dirname(os.path.abspath(str(filename)))
+                if not os.path.exists(parent_dir):
+                    os.makedirs(parent_dir)
+                f = open(filename, 'w+')
+                try:
+                    f.write("time, duration, start speed, accel\n")
+                    for t, d, sv, a in samples:
+                        if slowv is None and fastv is None:
+                            f.write("%.4f,%.4f,%.4f,%.4f\n" % (t, d, sv, a))
+                            continue
+                        if slowv is not None and fastv is not None:
+                            if (abs(sv - slowv) >= 0.00001 and
+                                abs(sv - fastv) >= 0.00001):
+                                continue
+                        f.write("%.4f,%.4f,%.4f,%.4f\n" % (t, d, sv, a))
+                finally:
+                    f.close()
+            except Exception as e:
+                logging.exception("Failed to write to %s: %s"
+                                  % (filename, str(e)))
         write_proc = multiprocessing.Process(target=write_impl)
         write_proc.daemon = True
         write_proc.start()
@@ -285,6 +313,15 @@ class FlowCalibrator(object):
                                self.cmd_FLOW_RESET_K)
         self._gcode.register_command('FLOW_APPLY_CALIBRATE_K',
                                self.cmd_FLOW_APPLY_CALIBRATE_K)
+        self._gcode.register_command('FLOW_CALIBRATE_FIT',
+                               self.cmd_FLOW_CALIBRATE_FIT,
+                               desc=self.cmd_FLOW_CALIBRATE_FIT_help)
+        self._gcode.register_command('FLOW_CALCULATOR_CHECK',
+                               self.cmd_FLOW_CALCULATOR_CHECK,
+                               desc=self.cmd_FLOW_CALCULATOR_CHECK_help)
+        self._gcode.register_command('FLOW_TEST_NEXT_K',
+                               self.cmd_FLOW_TEST_NEXT_K,
+                               desc=self.cmd_FLOW_TEST_NEXT_K_help)
         self._bg_client = None
         self._motion_report: motion_report.PrinterMotionReport = None
         self._printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -302,37 +339,54 @@ class FlowCalibrator(object):
 
     def _load_json_config(self, json_file):
         try:
-            params = json.load(open(json_file, 'r'))
-            if not params.get('factor') or not params.get('env'):
-                raise "invalid parameters in json config"
+            with open(json_file, 'r') as f:
+                params = json.load(f)
+            if (not isinstance(params, dict) or not params.get('factor')
+                    or not params.get('env')):
+                raise ValueError("invalid parameters in json config")
             k = params.get('factor')
             env = params.get('env')
+            if not isinstance(k, dict) or not isinstance(env, dict):
+                raise ValueError("factor and env must be dictionaries")
 
-            if not k.get('extruder') or not k.get('extruder1') or not k.get('extruder2') or not k.get('extruder3'):
-                raise
-            if not env.get('k_min') or not env.get('k_max') or not env.get('start_vel') or not env.get('start_dist') or \
-                not env.get('slow_vel') or not env.get('slow_dist') or not env.get('fast_dist') or not env.get('fast_vel') \
-                or not env.get('accel') or not env.get('loop') or not env.get('k_step') :
-                raise
-            self._current_k = k
-            self._env = env
+            for ext_name in ('extruder', 'extruder1', 'extruder2', 'extruder3'):
+                val = k.get(ext_name)
+                if (val is None or isinstance(val, bool)
+                        or not isinstance(val, (int, float)) or val < 0):
+                    raise ValueError("invalid factor value for %s: %s"
+                                     % (ext_name, val))
+
+            for env_key in ('k_min', 'k_max', 'start_vel', 'start_dist',
+                            'slow_vel', 'slow_dist', 'fast_dist', 'fast_vel',
+                            'accel', 'loop', 'k_step'):
+                val = env.get(env_key)
+                if (val is None or isinstance(val, bool)
+                        or not isinstance(val, (int, float)) or val <= 0):
+                    raise ValueError("invalid env value for %s: %s"
+                                     % (env_key, val))
+
+            self._current_k = copy.deepcopy(k)
+            self._env = copy.deepcopy(env)
         except Exception as e:
-            logging.info(f'reset flowcalibration config: {e}')
+            logging.info("reset flowcalibration config: %s" % (str(e),))
             if os.path.exists(json_file):
                 os.remove(json_file)
-            settings = {'factor': DEFAULT_K, 'env': DEFAULT_ENV}
+            self._current_k = copy.deepcopy(DEFAULT_K)
+            self._env = copy.deepcopy(DEFAULT_ENV)
+            settings = {'factor': self._current_k, 'env': self._env}
             with open(json_file, 'w+') as f:
                 f.write(json.dumps(settings))
-            self._current_k = DEFAULT_K
-            self._env = DEFAULT_ENV
 
     def _save_config(self):
         try:
             config = {'factor': self._current_k, 'env': self._env}
             json_content = json.dumps(config)
-            queuefile.async_write_file(self._config_path, json_content, safe_write=True)
+            queuefile.async_write_file(
+                self._config_path, json_content, safe_write=True)
         except Exception as e:
-            logging.exception(f"Failed to save flow calibrator config to {self._config_path}: {e}")
+            logging.exception(
+                "Failed to save flow calibrator config to %s: %s"
+                % (self._config_path, str(e)))
     def _handle_ready(self):
         self._apply_k()
         self._motion_report = self._printer.lookup_object('motion_report')
@@ -488,6 +542,18 @@ class FlowCalibrator(object):
                 return round(k_left - (k_right - k_left), 6)
         if area_sum < area_left or area_sum < area_right:
             return round(k_left + (k_right - k_left) / 2, 6)
+        return round(k_left + (k_right - k_left) / 2, 6)
+
+    cmd_FLOW_TEST_NEXT_K_help = "Test next k calculation"
+    def cmd_FLOW_TEST_NEXT_K(self, gcmd):
+        k_left = gcmd.get_float('KL', 0.01)
+        k_right = gcmd.get_float('KR', 0.03)
+        area_left = gcmd.get_float('AL', 0.0)
+        area_right = gcmd.get_float('AR', 0.0)
+        next_k = self._get_next_k(k_left, k_right, area_left, area_right)
+        if next_k is None:
+            raise gcmd.error("FLOW_TEST_NEXT_K returned None")
+        gcmd.respond_info("Next K: %.6f" % (next_k,))
 
     def _calculate_zero_crossing(self, point1, point2):
         x1, y1 = point1
@@ -496,7 +562,7 @@ class FlowCalibrator(object):
         if abs(y2 - y1) < 0.0001:
             self._abort_reason = ABORT_REASON_OUT_OF_RANGE
             self._abort_calibration = True
-            raise AbortCalibration(f'{self._abort_reason}')
+            raise AbortCalibration('%s' % (self._abort_reason,))
 
         return x1 - y1 * (x2 - x1) / (y2 - y1)
 
@@ -509,9 +575,35 @@ class FlowCalibrator(object):
         coefficients = np.polyfit(k_values, area_values, 1)
         slope = coefficients[0]
         intercept = coefficients[1]
+        if abs(slope) < 1e-12:
+            return None
         zero_crossing_k = -intercept / slope
 
         return zero_crossing_k
+
+    cmd_FLOW_CALIBRATE_FIT_help = "Calculate zero crossing from test points"
+    def cmd_FLOW_CALIBRATE_FIT(self, gcmd):
+        k1 = gcmd.get_float('K1', 0.01)
+        a1 = gcmd.get_float('A1', 0.0)
+        k2 = gcmd.get_float('K2', 0.02)
+        a2 = gcmd.get_float('A2', 0.0)
+        pts = [(k1, a1), (k2, a2)]
+        k3 = gcmd.get_float('K3', None)
+        a3 = gcmd.get_float('A3', None)
+        if k3 is not None and a3 is not None:
+            pts.append((k3, a3))
+        k_zero = self._calculate_linear_fitting_zero_crossing(pts)
+        if k_zero is None:
+            raise gcmd.error("flow_calibrate: slope near zero in linear fitting")
+        gcmd.respond_info("Calculated K zero crossing: %.6f" % (k_zero,))
+
+    cmd_FLOW_CALCULATOR_CHECK_help = "Check status of flow calculator server"
+    def cmd_FLOW_CALCULATOR_CHECK(self, gcmd):
+        try:
+            self._flow_calc_client.check_server()
+            gcmd.respond_info("Flow calculator server is available")
+        except FlowCalcError as e:
+            raise gcmd.error("Flow calculator check failed: %s" % (str(e),))
 
     def _calculate_os_linear_fitting_zero_crossing(self,
                                                     decel_data_list=None,
@@ -1026,11 +1118,14 @@ class FlowCalibrator(object):
                     measure_data_list.append((next_k, next_area))
 
                     measure_success_k = self._calculate_linear_fitting_zero_crossing(measure_data_list)
-                    if measure_success_k < 0:
+                    if measure_success_k is None:
+                        measure_success_k = filaments_max_flow_k
+                    elif measure_success_k < 0:
                         measure_success_k = 0
                     elif measure_success_k > filaments_max_flow_k:
                         measure_success_k = filaments_max_flow_k
-                    gcmd.respond_info(f'measure_data_list: {measure_data_list}, cali_k: {measure_success_k:.5f}')
+                    gcmd.respond_info('measure_data_list: %s, cali_k: %.5f'
+                                      % (measure_data_list, measure_success_k))
 
                 elif algorithm in (ALGORITHM_TYPE_OS_ACCEL, ALGORITHM_TYPE_OS_DECEL, ALGORITHM_TYPE_OS_ACCEL_DECEL):
                     decel_data_list = []
@@ -1191,7 +1286,17 @@ class FlowCalibrator(object):
 
     cmd_ACCEL_TIME_MEASURE_help = 'measure acceleration time of specified axis'
     def cmd_ACCEL_TIME_MEASURE(self, gcmd):
-        axis = gcmd.get('AXIS')
+        axis = gcmd.get('AXIS', 'toolhead')
+        if axis is not None:
+            filename = str(axis).strip()
+            clean_name = os.path.basename(filename)
+            is_invalid = (not clean_name or clean_name != filename
+                          or any(sep in filename
+                                 for sep in ('/', '\\', '..', '\0')))
+            if is_invalid:
+                raise gcmd.error(
+                    "flow_calibrator: Invalid AXIS parameter '%s' - "
+                    "path traversal not allowed" % (axis,))
         if self._bg_client is None:
             self._bg_client = self.start_measure_acceleration_time(axis)
             gcmd.respond_info("acceleration measurements started")
@@ -1206,19 +1311,35 @@ class FlowCalibrator(object):
         # Write data to file
         vsd = self._printer.lookup_object('virtual_sdcard', None)
         if vsd is None:
-            gcmd.respond_info("No virtual_sdcard dir to save frequency_data data")
-            data_path = pathlib.Path('/userdata/gcodes/frequency_data')
+            gcmd.respond_info(
+                "No virtual_sdcard dir to save frequency_data data")
+            data_path = pathlib.Path('/tmp/frequency_data')
         else:
-            data_path = pathlib.Path(f'{vsd.sdcard_dirname}/frequency_data')
-        if not os.path.exists(data_path):
-            os.makedirs(data_path)
-        filename = data_path.joinpath("accelts-%s-%s.csv" % (str(axis), name))
-        bg_client.write_to_file(filename)
+            data_path = pathlib.Path(
+                "%s/frequency_data" % (vsd.sdcard_dirname,))
+        if not os.path.exists(str(data_path)):
+            try:
+                os.makedirs(str(data_path))
+            except OSError:
+                pass
+        fname = "accelts-%s-%s.csv" % (str(axis), name)
+        full_path = os.path.abspath(os.path.join(str(data_path), fname))
+        base_dir = os.path.abspath(str(data_path))
+        if not full_path.startswith(base_dir + os.sep):
+            raise gcmd.error(
+                "flow_calibrator: Security violation: "
+                "output file path escapes frequency data directory")
+        bg_client.write_to_file(full_path)
 
         gcmd.respond_info("Writing raw accel time data to %s file"
-                          % (filename,))
+                          % (full_path,))
 
     def cmd_FLOW_MEASURE_K(self, gcmd):
+        k_step_param = gcmd.get_float('STEP', self._env.get('k_step', 0.005),
+                                      above=0.)
+        if self._task_config is None or self._filament_parameters is None:
+            raise gcmd.error("[flow_measure_k] cannot get necessary objects")
+
         extruder_index = self._toolhead.get_extruder().extruder_index
         task_config_status = self._task_config.get_status()
         extruder = self._toolhead.get_extruder()
@@ -1252,7 +1373,8 @@ class FlowCalibrator(object):
             ALGORITHM_TYPE_OS_DECEL:       (AERA_CALC_MODE_OS, os_count),
             ALGORITHM_TYPE_OS_ACCEL_DECEL: (AERA_CALC_MODE_OS, os_count),
         }
-        _algo_calc_mode, _algo_sample_count = _area_algo_map.get(algorithm, (AERA_CALC_MODE_ORIGINAL, 0))
+        _algo_calc_mode, _algo_sample_count = _area_algo_map.get(
+            algorithm, (AERA_CALC_MODE_ORIGINAL, 0))
 
         fast_v = gcmd.get_float('FASTV', builtin_flow_fast_v, minval=0)
         slow_v = gcmd.get_float('SLOWV', builtin_flow_slow_v, minval=0)
@@ -1263,7 +1385,7 @@ class FlowCalibrator(object):
         flow_start_d = max(start_vel * 1, 3)
         # flow_slow_d = max(slow_v * 1.0 + _ramp_dist, 0.5)
         # flow_fast_d = max(fast_v * 1.0 + _ramp_dist, 0.8)
-        flow_slow_d = max(slow_v * 0.5 , 0.5)
+        flow_slow_d = max(slow_v * 0.5, 0.5)
         flow_fast_d = max(fast_v * 0.5 + 2 * _ramp_dist, 0.8)
 
         start_dist = gcmd.get_float('STARTD', flow_start_d, minval=0)
@@ -1273,7 +1395,7 @@ class FlowCalibrator(object):
         cali_params = {
             'k_min': gcmd.get_float('MIN', builtin_flow_k_min),
             'k_max': gcmd.get_float('MAX', builtin_flow_k_max),
-            'k_step': gcmd.get_float('STEP', self._env['k_step']),
+            'k_step': k_step_param,
             'start_vel': start_vel,
             'start_dist': start_dist,
             'slow_vel': slow_v,
@@ -1287,14 +1409,16 @@ class FlowCalibrator(object):
             'os_sample_count': _algo_sample_count
         }
 
-        gcmd.respond_info("[flow_measure_k] calib_param: %s \r\n" % (str(cali_params)))
+        gcmd.respond_info("[flow_measure_k] calib_param: %s \r\n"
+                          % (str(cali_params),))
 
         # check if target extruder is current extruder?
         extruder = self._toolhead.get_extruder()
         estepper = extruder.extruder_stepper
         backup_st = estepper.config_smooth_time
-        inductance_coil_name = f'inductance_coil {extruder.get_name()}'
+        inductance_coil_name = "inductance_coil %s" % (extruder.get_name(),)
         self._toolhead.get_last_move_time()
+        pheaters = None
         try:
             pheaters = self._printer.lookup_object('heaters')
             inductance_coil_wrapper = self._printer.lookup_object(inductance_coil_name)
@@ -1302,7 +1426,8 @@ class FlowCalibrator(object):
             retry_extruder_id = extruder.check_allow_retry_switch_extruder()
             info = status[0]
             if info[1] != 0 and retry_extruder_id != extruder.extruder_num:
-                raise gcmd.error(f'extruder {extruder.get_name()} is not activated!')
+                raise gcmd.error("extruder %s is not activated!"
+                                 % (extruder.get_name(),))
         except self._printer.config_error as e:
             raise gcmd.error(str(e))
 
@@ -1310,55 +1435,73 @@ class FlowCalibrator(object):
             # move to extrusion position before heating nozzle, avoid dripping on the bed
             self._gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
 
-            gcmd.respond_info(f'start flow calibration for {extruder.get_name()}')
-            gcmd.respond_info(f'start heating heater to {temperature} degre')
+            gcmd.respond_info("start flow calibration for %s"
+                              % (extruder.get_name(),))
+            gcmd.respond_info("start heating heater to %d degree"
+                              % (temperature,))
             pheaters.set_temperature(extruder.get_heater(), temperature, True)
 
             # start measuring inductance coil frequency
-            gcmd.respond_info(f'start measuring frequency')
+            gcmd.respond_info("start measuring frequency")
             inductance_coil = inductance_coil_wrapper.sensor
 
-            gcmd.respond_info(f'start extruding')
+            gcmd.respond_info("start extruding")
 
             k_min = int(cali_params['k_min'] * 1000)
             k_max = int(cali_params['k_max'] * 1000)
             k_step = int(cali_params['k_step'] * 1000)
+            if k_step <= 0:
+                raise gcmd.error("FLOW_MEASURE_K: STEP must be greater than 0")
 
-            # prepaire direcotry for data
+            # prepare directory for data
             vsd = self._printer.lookup_object('virtual_sdcard', None)
             if vsd is None:
                 gcmd.respond_info("No virtual_sdcard dir to save frequency_data data")
                 data_path = pathlib.Path('/userdata/gcodes/frequency_data/flow_test')
             else:
-                data_path = pathlib.Path(f'{vsd.sdcard_dirname}/frequency_data/flow_test')
-            if not os.path.exists(data_path):
-                os.makedirs(data_path)
-            extruder_dir = data_path.joinpath(f'{time.strftime("%m%d-%H%M")}_{extruder.get_name()}')
-            if not os.path.exists(extruder_dir):
-                os.makedirs(extruder_dir)
+                data_path = pathlib.Path(
+                    "%s/frequency_data/flow_test" % (vsd.sdcard_dirname,))
+            if not os.path.exists(str(data_path)):
+                os.makedirs(str(data_path))
+            dir_name = "%s_%s" % (time.strftime("%m%d-%H%M"),
+                                  extruder.get_name())
+            extruder_dir = data_path.joinpath(dir_name)
+            if not os.path.exists(str(extruder_dir)):
+                os.makedirs(str(extruder_dir))
             else:
-                logging.info(f'frequency_data dir {extruder_dir} already exists')
-                extruder_dir = data_path.joinpath(f'{time.strftime("%m%d-%H%M")}_{extruder.get_name()}_{random.randint(0, 10000)}')
+                logging.info("frequency_data dir %s already exists"
+                             % (extruder_dir,))
+                rnd_name = "%s_%s_%d" % (time.strftime("%m%d-%H%M"),
+                                         extruder.get_name(),
+                                         random.randint(0, 10000))
+                extruder_dir = data_path.joinpath(rnd_name)
             # notify other objects to start flow calibration
             self._printer.send_event('flow_calibration:begin')
-            gcmd.respond_info(f'k min: {k_min/1000:.3f}, max: {k_max/1000:.3f}, step: {k_step/1000:.3f}')
+            gcmd.respond_info("k min: %.3f, max: %.3f, step: %.3f"
+                              % (k_min / 1000.0, k_max / 1000.0, k_step / 1000.0))
             for k in range(k_min, k_max, k_step):
-                float_k = round(k / 1000, 3)
-                area = self._measure_k(extruder, inductance_coil, float_k, cali_params, extruder_dir)
+                float_k = round(k / 1000.0, 3)
+                area = self._measure_k(extruder, inductance_coil, float_k,
+                                       cali_params, extruder_dir)
                 if isinstance(area, tuple):
-                    gcmd.respond_info(f'k{float_k:.3f}: decel={area[0]:.3f}, accel={area[1]:.3f}')
+                    gcmd.respond_info("k%.3f: decel=%.3f, accel=%.3f"
+                                      % (float_k, area[0], area[1]))
                 else:
-                    gcmd.respond_info(f'k{float_k:.3f}: area={area:.3f}')
+                    gcmd.respond_info("k%.3f: area=%.3f"
+                                      % (float_k, area))
         except AbortCalibration as e:
-            gcmd.respond_info(f'abort calibration')
-        self._set_pressure_advance(extruder, DEFAULT_K[extruder.get_name()], backup_st)
-        if not self._abort_calibration:
-            self._end_of_calibration(extruder)
-        self._abort_calibration = False
-        self._abort_reason = None
-        # notify other objects to end flow calibration
-        self._printer.send_event('flow_calibration:end')
-        pheaters.set_temperature(extruder.get_heater(), 0)
+            gcmd.respond_info("abort calibration")
+        finally:
+            self._set_pressure_advance(
+                extruder, DEFAULT_K[extruder.get_name()], backup_st)
+            if not self._abort_calibration:
+                self._end_of_calibration(extruder)
+            self._abort_calibration = False
+            self._abort_reason = None
+            # notify other objects to end flow calibration
+            self._printer.send_event('flow_calibration:end')
+            if pheaters is not None:
+                pheaters.set_temperature(extruder.get_heater(), 0)
 
 def load_config(config):
     return FlowCalibrator(config)

@@ -203,6 +203,8 @@ class InductanceCoil:
         self._mcu.register_config_callback(self._build_config)
 
     def _build_config(self):
+        if self._mcu.is_fileoutput():
+            return
         self._oid = self._mcu.create_oid()
 
         self._mcu.add_config_cmd(
@@ -233,12 +235,18 @@ class InductanceCoil:
             oid=self._oid, cq=self._cmd_queue)
 
     def _cmd_set_trig_freq(self, freq_ht, freq_lt, absolute_mode=True, trigger_mode=0, trigger_invert=False, force_update=True):
+        if self._mcu.is_fileoutput():
+            return
         self.set_trig_freq_cmd.send([self._oid, absolute_mode, trigger_mode, trigger_invert, freq_ht, freq_lt, force_update])
 
     def _cmd_set_trig_freq_with_timer(self, freq_ht, freq_lt, clock, absolute_mode=True, trigger_mode=0, trigger_invert=False, force_update=True):
+        if self._mcu.is_fileoutput():
+            return
         self.set_trig_freq_with_timer_cmd.send([self._oid, absolute_mode, trigger_mode, trigger_invert, freq_ht, freq_lt, force_update, clock])
 
     def _cmd_query_trig_freq_info(self):
+        if self._mcu.is_fileoutput():
+            return {'capture_freq': 1400000, 'virtual_gpio': 0}
         param = self.query_inductance_coil_info_cmd.send([self._oid])
         return param
 

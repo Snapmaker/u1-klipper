@@ -1,0 +1,8 @@
+# Test case for BUG-EXC-04: FLOW_MEASURE_K parameter validation & heater cleanup
+CONFIG bug_exc04_flow_calibrator.cfg
+DICTIONARY simulator.dict
+SHOULD_FAIL
+
+# Attempt FLOW_MEASURE_K with STEP=0 triggering validation error rather than crash
+FLOW_MEASURE_K STEP=0
+
