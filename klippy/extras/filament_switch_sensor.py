@@ -87,7 +87,9 @@ class RunoutHelper:
         self._exec_gcode(pause_prefix, self.runout_gcode)
         if self.runout_pause:
             try:
+                logging.info("try to run auto replenish")
                 self.gcode.run_script(f'\nM400\nINNER_AUTO_REPLENISH_FILAMENT EXTRUDER={self.extruder_index}\n')
+                logging.info("try to run auto replenish done")
             except Exception:
                 logging.exception("Script running error")
             if self.print_task_config.perform_auto_replenish == False:

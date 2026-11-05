@@ -182,10 +182,31 @@ class ResonanceTester:
                     resolved.append((chip_axis, chip))
             self.accel_chips = resolved
 
+    def _raise_accel_error(self, msg):
+        err_msg = '{"coded": "0003-0522-0000-0010", "oneshot": 1, "msg":"%s"}' % msg
+        raise self.printer.command_error(err_msg)
+    def _resolve_accel_chip(self, chip):
+        if hasattr(chip, 'sensor_identified'):
+            wrapper_name = chip.name
+            chip = chip.sensor_identified
+            if chip is None:
+                self._raise_accel_error(
+                        "No accelerometer identified by '%s'. "
+                        "Possible causes: connection problems (faulty wiring) "
+                        "or a faulty accelerometer chip." % (wrapper_name,))
+        return chip
+
     def _run_test(self, gcmd, axes, helper, raw_name_suffix=None,
                   accel_chips=None, test_point=None):
         toolhead = self.printer.lookup_object('toolhead')
         calibration_data = {axis: None for axis in axes}
+
+        if accel_chips is None:
+            self.accel_chips = [(chip_axis, self._resolve_accel_chip(chip))
+                                for chip_axis, chip in self.accel_chips]
+        else:
+            accel_chips = [self._resolve_accel_chip(chip)
+                           for chip in accel_chips]
 
         self.test.prepare_test(gcmd)
 
@@ -245,11 +266,28 @@ class ResonanceTester:
     def _parse_chips(self, accel_chips):
         parsed_chips = []
         for chip_name in accel_chips.split(','):
-            if "adxl345" in chip_name:
-                chip_lookup_name = chip_name.strip()
-            else:
-                chip_lookup_name = "adxl345 " + chip_name.strip();
-            chip = self.printer.lookup_object(chip_lookup_name)
+            # if "adxl345" in chip_name:
+            #     chip_lookup_name = chip_name.strip()
+            # else:
+            #     chip_lookup_name = "adxl345 " + chip_name.strip();
+            # chip = self.printer.lookup_object(chip_lookup_name)
+            chip_name = chip_name.strip()
+            lookup_names = [chip_name]
+            if "adxl345" not in chip_name:
+                lookup_names.append("adxl345 " + chip_name)
+            chip = None
+            for lookup_name in lookup_names:
+                try:
+                    chip = self.printer.lookup_object(lookup_name)
+                    break
+                except self.printer.config_error:
+                    pass
+            if chip is not None:
+                chip = self._resolve_accel_chip(chip)
+            if chip is None or not hasattr(chip, 'start_internal_client'):
+                self._raise_accel_error(
+                        "Unknown accelerometer '%s' in CHIPS parameter."
+                        % (chip_name,))
             parsed_chips.append(chip)
         return parsed_chips
     def _get_max_calibration_freq(self):

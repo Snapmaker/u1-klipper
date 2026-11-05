@@ -710,6 +710,50 @@ def switch_user_group(user_name):
     except Exception as e:
         logging.error("Unexpected error switching to user '%s': %s", user_name, str(e))
 
+def mlock_code_pages():
+    # Pin file-backed code pages (python interpreter, libpython, C
+    # extension .so files, .pyc bytecode) in RAM.  Anonymous heap pages
+    # are NOT locked: zram swap and reclaim still apply to them.
+    # Called after klippy imports are done so all code mappings exist.
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mlock.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    locked = 0
+    failed = 0
+    with open("/proc/self/maps") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 6 or not parts[5].startswith('/'):
+                continue
+            perms = parts[1]
+            # read-only file-backed mappings only (no 'w'): code + ro data
+            if 'r' not in perms or 'w' in perms:
+                continue
+            lo, hi = parts[0].split('-')
+            addr = int(lo, 16)
+            length = int(hi, 16) - addr
+            if length == 0:
+                continue
+            if libc.mlock(ctypes.c_void_p(addr), length) == 0:
+                locked += length
+            else:
+                failed += 1
+    logging.info(
+        f"mlock-code-pages: locked {locked // 1024} KiB ({failed} mappings failed)\n")
+    return locked
+
+def mlock_code_pages_bg():
+    # Called from a background thread once the printer is fully up, so
+    # that modules lazily imported during Printer() init (numpy, extras,
+    # kinematics, ...) are also covered.  Re-scans /proc/self/maps and
+    # mlocks any read-only file mapping that appeared since.
+    locked = 0
+    try:
+        locked = mlock_code_pages()
+        logging.info(f"code pages locked in RAM (bg rescan): {locked // 1024} KiB")
+    except Exception:
+        logging.exception("bg mlock of code pages failed")
+
 def main():
     usage = "%prog [options] <config file>"
     opts = optparse.OptionParser(usage)
@@ -814,6 +858,19 @@ def main():
         logging.warning("No log file specified!"
                         " Severe timing issues may result!")
     gc.disable()
+    # Pin all file-backed code pages (interpreter, shared libs, C
+    # extensions, .pyc) in RAM once imports are done.  Heap (anonymous
+    # pages) remains swappable/reclaimable - only code is protected.
+    # A delayed rescan covers modules imported during Printer() init.
+    try:
+        locked_kib = mlock_code_pages()
+        logging.info("code pages locked in RAM: %d KiB" % (locked_kib // 1024,))
+    except Exception:
+        logging.exception("mlock of code pages failed")
+    import threading
+    _mlock_timer = threading.Timer(30.0, mlock_code_pages_bg)
+    _mlock_timer.daemon = True
+    _mlock_timer.start()
     logging.info(f'start args: {start_args}')
     # Start Printer() class
     while 1:

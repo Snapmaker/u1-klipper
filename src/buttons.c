@@ -46,7 +46,8 @@ buttons_event(struct timer *t)
         if (diff & debounced) {
             // Pin has been consistently different - report it
             b->pressed = (b->pressed & ~debounced) | (status & debounced);
-            if (b->report_count < sizeof(b->reports)) {
+            // if (b->report_count < sizeof(b->reports)) {
+            if (b->report_count < sizeof(b->reports) / sizeof(b->reports[0])) {
                 b->reports[b->report_count++] = b->pressed;
                 sched_wake_task(&buttons_wake);
                 b->retransmit_state = BF_PENDING;
