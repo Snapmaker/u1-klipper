@@ -14,6 +14,11 @@ class Fan:
         self.reactor = self.printer.get_reactor()
         self.last_fan_value = 0.
         self.last_fan_time = 0.
+        self.requested_fan_value = 0.
+        self.pending_values = []
+        # (print_time, value) PWM changes the status has not reached yet
+        self.scheduled_values = []
+        self.status_value = 0.
         self.last_enable_value = 0.
         # Read config
         self.max_power = config.getfloat('max_power', 1., above=0., maxval=1.)
@@ -49,6 +54,7 @@ class Fan:
     def get_mcu(self):
         return self.mcu_fan.get_mcu()
     def set_speed(self, print_time, value, control_enable=True):
+        self.requested_fan_value = value
         if value < self.off_below:
             value = 0.
         value = max(0., min(self.max_power, value * self.max_power))
@@ -79,18 +85,37 @@ class Fan:
         self.mcu_fan.set_pwm(print_time, value, FAN_MIN_TIME)
         self.last_fan_time = print_time
         self.last_fan_value = value
+        self.scheduled_values.append((print_time, value))
+        self._status_speed(self.reactor.monotonic())
     def set_speed_from_command(self, value, control_enable=True):
         system_time = self.reactor.monotonic()
         system_time += FAN_MIN_TIME
         print_time = self.get_mcu().estimated_print_time(system_time)
         self.set_speed(print_time, value, control_enable)
+    def set_speed_from_gcode(self, value, control_enable=True):
+        self.pending_values.append(value)
+        def apply_speed(print_time):
+            self.pending_values.pop(0)
+            self.set_speed(print_time, value, control_enable)
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.register_lookahead_callback(apply_speed)
+    def get_requested_speed(self):
+        if self.pending_values:
+            return self.pending_values[-1]
+        return self.requested_fan_value
+    def _status_speed(self, eventtime):
+        # Report a speed once the MCU clock reaches its PWM print time
+        print_time = self.get_mcu().estimated_print_time(eventtime)
+        while self.scheduled_values and self.scheduled_values[0][0] <= print_time:
+            self.status_value = self.scheduled_values.pop(0)[1]
+        return self.status_value
     def _handle_request_restart(self, print_time):
         self.set_speed(print_time, 0.)
 
     def get_status(self, eventtime):
         tachometer_status = self.tachometer.get_status(eventtime)
         return {
-            'speed': self.last_fan_value,
+            'speed': self._status_speed(eventtime),
             'rpm': tachometer_status['rpm'],
         }
 
@@ -158,12 +183,12 @@ class PrinterFan:
 
     def get_all_fan_speed(self):
         fan_speed_dict = {}
-        fan_speed_dict['main_fan'] = self.fan.last_fan_value
+        fan_speed_dict['main_fan'] = self.fan.get_requested_speed()
         fan_speed_dict['extendable_fan'] = {}
         for fan_id in self.extendable_fan:
             fan_obj = self.printer.lookup_object("fan_generic {}".format(self.extendable_fan[fan_id]), None)
             if fan_obj is not None:
-                fan_speed_dict['extendable_fan'][fan_id] = fan_obj.fan.last_fan_value
+                fan_speed_dict['extendable_fan'][fan_id] = fan_obj.fan.get_requested_speed()
             else:
                 logging.error("No fan found with ID {}".format(fan_id))
         return copy.deepcopy(fan_speed_dict)
@@ -189,13 +214,13 @@ class PrinterFan:
             if fan_id in self.extendable_fan:
                 fan_obj = self.printer.lookup_object("fan_generic {}".format(self.extendable_fan[fan_id]), None)
                 if fan_obj is not None:
-                    fan_obj.fan.set_speed_from_command(value)
+                    fan_obj.fan.set_speed_from_gcode(value)
                 else:
                     gcmd.respond_info("M106: No fan found with ID {}".format(fan_id))
             else:
                 gcmd.respond_info("M106: Unsupported fan ID: {}".format(fan_id))
         else:
-            self.fan.set_speed_from_command(value)
+            self.fan.set_speed_from_gcode(value)
     def cmd_M107(self, gcmd):
         # Turn fan off
         fan_id = gcmd.get_int('P', None)
@@ -203,13 +228,13 @@ class PrinterFan:
             if fan_id in self.extendable_fan:
                 fan_obj = self.printer.lookup_object("fan_generic {}".format(self.extendable_fan[fan_id]), None)
                 if fan_obj is not None:
-                    fan_obj.fan.set_speed_from_command(0.)
+                    fan_obj.fan.set_speed_from_gcode(0.)
                 else:
                     gcmd.respond_info("M107: No fan found with ID {}".format(fan_id))
             else:
                 gcmd.respond_info("M107: Unsupported fan ID: {}".format(fan_id))
         else:
-            self.fan.set_speed_from_command(0.)
+            self.fan.set_speed_from_gcode(0.)
 
 def load_config(config):
     return PrinterFan(config)

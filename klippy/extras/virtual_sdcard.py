@@ -1002,8 +1002,7 @@ class VirtualSD:
                 # self.gcode.respond_info("fan key: {}".format(key))
                 if fan_obj is not None:
                     curtime = self.reactor.monotonic()
-                    fan_sta = fan_obj.get_status(curtime)
-                    fan_value = int(fan_sta[fan_info[key][2]] * 255)
+                    fan_value = int(fan_obj.fan.get_requested_speed() * 255)
                     fan_state[key] = fan_info[key][1] + ' S{}'.format(fan_value)
         fan_state.update(data_dict)
         self.save_environment_data(self.pl_print_fan_info_env_path, fan_state, sync, flush, safe_write)
