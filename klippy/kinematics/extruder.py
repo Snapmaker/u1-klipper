@@ -1500,9 +1500,8 @@ class PrinterExtruder:
 
             print_fan = self.printer.lookup_object('fan', None)
             print_fan_speed = None
-            current_time = self.printer.get_reactor().monotonic()
             if print_fan is not None:
-                print_fan_speed = print_fan.get_status(current_time)['speed']
+                print_fan_speed = print_fan.fan.get_requested_speed()
                 print_fan.fan.set_speed_from_command(0)
 
             # enable pwm pin in order to detect the extruder gripping state

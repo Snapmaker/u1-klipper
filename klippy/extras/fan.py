@@ -16,6 +16,9 @@ class Fan:
         self.last_fan_time = 0.
         self.requested_fan_value = 0.
         self.pending_values = []
+        # (print_time, value) PWM changes the status has not reached yet
+        self.scheduled_values = []
+        self.status_value = 0.
         self.last_enable_value = 0.
         # Read config
         self.max_power = config.getfloat('max_power', 1., above=0., maxval=1.)
@@ -82,6 +85,8 @@ class Fan:
         self.mcu_fan.set_pwm(print_time, value, FAN_MIN_TIME)
         self.last_fan_time = print_time
         self.last_fan_value = value
+        self.scheduled_values.append((print_time, value))
+        self._status_speed(self.reactor.monotonic())
     def set_speed_from_command(self, value, control_enable=True):
         system_time = self.reactor.monotonic()
         system_time += FAN_MIN_TIME
@@ -98,13 +103,19 @@ class Fan:
         if self.pending_values:
             return self.pending_values[-1]
         return self.requested_fan_value
+    def _status_speed(self, eventtime):
+        # Report a speed once the MCU clock reaches its PWM print time
+        print_time = self.get_mcu().estimated_print_time(eventtime)
+        while self.scheduled_values and self.scheduled_values[0][0] <= print_time:
+            self.status_value = self.scheduled_values.pop(0)[1]
+        return self.status_value
     def _handle_request_restart(self, print_time):
         self.set_speed(print_time, 0.)
 
     def get_status(self, eventtime):
         tachometer_status = self.tachometer.get_status(eventtime)
         return {
-            'speed': self.last_fan_value,
+            'speed': self._status_speed(eventtime),
             'rpm': tachometer_status['rpm'],
         }
 
