@@ -179,7 +179,7 @@ class AutoScrewsTiltAdjust:
         except Exception as e:
             web_request.send({'state': 'error', 'message': str(e)})
     def _probe_abort_check(self):
-        if self.abort_flag:
+        if self.abort_flag or self.printer.is_shutdown():
             with self.lock:
                 self.state = AutoScrewsTiltAdjustStep.PROBING_ABORTING
             logging.info("abort_flag set, can't continue")
@@ -205,9 +205,9 @@ class AutoScrewsTiltAdjust:
 
         # Calculate target Z height (average of all points)
         z_values = [pos[2] for pos in positions]
-        self.target_z = sum(z_values) / len(z_values)
-        self.min_z = min(z_values)
-        self.max_z = max(z_values)
+        self.target_z = sum(z_values) / len(z_values) if z_values else 0.0
+        self.min_z = min(z_values) if z_values else 0.0
+        self.max_z = max(z_values) if z_values else 0.0
 
         # Assign base points
         self.base_points = z_values[:4]  # Store as list
@@ -515,9 +515,11 @@ class AutoScrewsTiltAdjust:
         probe_object = self.printer.lookup_object('probe', None)
         if probe_object is None:
             raise gcmd.error("Probe object not found")
+        max_verify_attempts = gcmd.get_int('MAX_VERIFY_ATTEMPTS', self.max_verify_attempts, minval=1)
+        max_adjust_times = gcmd.get_int('ADJUST_MAX_TIMES', self.max_adjust_times, minval=1)
         try:
             verify_attempt = 0
-            while True:
+            while verify_attempt < max_verify_attempts:
                 verify_attempt += 1
                 self.gcode.respond_info("Starting adjustment round %d..." % verify_attempt)
                 self.gcode.respond_info("Initial probing results:")
@@ -551,7 +553,12 @@ class AutoScrewsTiltAdjust:
                     self._move([coord[0], coord[1], None], self.probe_helper.speed)
                     self._move([None, None, self.base_points[i]+self.sample_retract_dist], self.probe_helper.lift_speed)
                     probe_cmd = "PROBE SAMPLES=1 SAMPLE_RETRACT_DIST={}".format(self.sample_retract_dist)
+                    adjust_count = 0
                     while True:
+                        adjust_count += 1
+                        if adjust_count > max_adjust_times:
+                            raise AutoScrewsTiltAdjustLimit(
+                                "%s adjustment exceeded max limit (%d times)" % (name, max_adjust_times))
                         self.need_adjusted_z = self.target_z - self.base_points[i]
                         diff = self.target_z - self.base_points[i]
                         direction = "CW" if diff > 0 else "CCW"
@@ -571,6 +578,10 @@ class AutoScrewsTiltAdjust:
                 probe_cmd = "PROBE SAMPLES=3 SAMPLE_RETRACT_DIST={}".format(self.sample_retract_dist)
                 if self._verify_level(probe_cmd, toolhead, probe_object):
                     raise AutoScrewsTiltAdjustPass
+                elif verify_attempt < max_verify_attempts:
+                    self.gcode.respond_info("Preparing for adjustment round %d..." % (verify_attempt + 1))
+                else:
+                    raise AutoScrewsTiltAdjustLimit("Adjustment exceeded max verification attempts (%d)" % max_verify_attempts)
 
                 # Recalculate target height as average of max and min
                 self.max_z = max(self.base_points)

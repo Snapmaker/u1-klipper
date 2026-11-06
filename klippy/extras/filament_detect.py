@@ -243,6 +243,7 @@ class FilamentDetector:
     def cmd_FILAMENT_DT_SELF_TEST(self, gcmd):
         channel = gcmd.get_int('CHANNEL', None)
         times = gcmd.get_int('TIMES', 100)
+        timeout = gcmd.get_float('TIMEOUT', max(10.0, times * 0.2), minval=0.1)
 
         if (channel is None):
             raise gcmd.error("CHANNEL must be specified!")
@@ -251,29 +252,40 @@ class FilamentDetector:
             msg = ("channel[%d] is out of range[0, %d]" % (channel, self._channel_nums - 1))
             raise gcmd.error(msg)
 
+        if self._fm175xx_reader is None:
+            raise gcmd.error("RFID reader fm175xx_reader is not available")
+
         self._state[channel] = FILAMENT_DT_STATE_SELF_TESTING
         finish = False
         test_times = 0
         success_times = 0
         self._self_test_success_cnt = 0
         self._fm175xx_reader.self_test(channel, times)
-        while (1):
-            finish, test_times, success_times = self._fm175xx_reader.self_test_result()
-            if finish:
-                break
-            self.reactor.pause(self.reactor.monotonic() + 0.3)
+        endtime = self.reactor.monotonic() + timeout
+        try:
+            while not self.printer.is_shutdown():
+                finish, test_times, success_times = self._fm175xx_reader.self_test_result()
+                if finish:
+                    break
+                if self.reactor.monotonic() >= endtime:
+                    raise gcmd.error("Self test timed out after %.1fs on channel %d"
+                                     % (timeout, channel))
+                self.reactor.pause(self.reactor.monotonic() + 0.3)
+            if not finish:
+                raise gcmd.error("Self test aborted due to printer shutdown")
 
-        msg = ("channel[%d] test times = %d, success times: %d\n" % (
-                channel, test_times, self._self_test_success_cnt))
-        gcmd.respond_info(msg, log=False)
-        msg = ("channel[%d] vendor = %s, main_type: %s, sub_type= %s, argb_color = %08X\n"
-                % (channel,
-                    self._filament_info[channel]['VENDOR'],
-                    self._filament_info[channel]['MAIN_TYPE'],
-                    self._filament_info[channel]['SUB_TYPE'],
-                    self._filament_info[channel]['ARGB_COLOR']))
-        gcmd.respond_info(msg, log=False)
-        self._state[channel] = FILAMENT_DT_STATE_IDLE
+            msg = ("channel[%d] test times = %d, success times: %d\n" % (
+                    channel, test_times, self._self_test_success_cnt))
+            gcmd.respond_info(msg, log=False)
+            msg = ("channel[%d] vendor = %s, main_type: %s, sub_type= %s, argb_color = %08X\n"
+                    % (channel,
+                        self._filament_info[channel]['VENDOR'],
+                        self._filament_info[channel]['MAIN_TYPE'],
+                        self._filament_info[channel]['SUB_TYPE'],
+                        self._filament_info[channel]['ARGB_COLOR']))
+            gcmd.respond_info(msg, log=False)
+        finally:
+            self._state[channel] = FILAMENT_DT_STATE_IDLE
 
     def cmd_FILAMENT_DT_STARTUP_STAY(self, gcmd):
         stay = gcmd.get_int('STAY', None)

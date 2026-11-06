@@ -1,0 +1,7 @@
+# Test case for BUG-LOG-05: Missing Y diff check in park position verification
+CONFIG bug_log05_extruder.cfg
+DICTIONARY simulator.dict
+SHOULD_FAIL
+
+# Attempt verify park position with Y exceeding allowed threshold without FORCE_MOVE
+VERIFY_PARK_POSITION EXTRUDER=extruder X=35.0 Y=340.0

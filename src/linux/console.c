@@ -76,13 +76,13 @@ console_setup(char *name)
     }
     ret = set_non_blocking(mfd);
     if (ret)
-        return -1;
+        goto fail;
     ret = set_close_on_exec(mfd);
     if (ret)
-        return -1;
+        goto fail;
     ret = set_close_on_exec(sfd);
     if (ret)
-        return -1;
+        goto fail;
     main_pfd[MP_TTY_IDX].fd = mfd;
     main_pfd[MP_TTY_IDX].events = POLLIN;
 
@@ -91,25 +91,31 @@ console_setup(char *name)
     char *tname = ttyname(sfd);
     if (!tname) {
         report_errno("ttyname", 0);
-        return -1;
+        goto fail;
     }
     ret = symlink(tname, name);
     if (ret) {
         report_errno("symlink", ret);
-        return -1;
+        goto fail;
     }
     ret = chmod(tname, 0666);
     if (ret) {
         report_errno("chmod", ret);
-        return -1;
+        goto fail;
     }
 
     // Make sure stderr is non-blocking
     ret = set_non_blocking(STDERR_FILENO);
     if (ret)
-        return -1;
+        goto fail;
 
     return 0;
+
+fail:
+    close(mfd);
+    close(sfd);
+    main_pfd[MP_TTY_IDX].fd = -1;
+    return -1;
 }
 
 

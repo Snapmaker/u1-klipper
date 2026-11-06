@@ -193,6 +193,8 @@ class BedMesh:
         if z_pos >= self.fade_end:
             return 0.
         elif z_pos >= self.fade_start:
+            if abs(self.fade_dist) < 1e-9:
+                return 0.
             return (self.fade_end - z_pos) / self.fade_dist
         else:
             return 1.
@@ -216,9 +218,13 @@ class BedMesh:
                 # Likely in the process of fading out adjustment.
                 # Because we don't yet know the gcode z position, use
                 # algebra to calculate the factor from the toolhead pos
-                factor = ((self.fade_end + self.fade_target - fade_z_pos) /
-                          (self.fade_dist - z_adj))
-                factor = constrain(factor, 0., 1.)
+                denom = self.fade_dist - z_adj
+                if abs(denom) < 1e-9:
+                    factor = 0.
+                else:
+                    factor = ((self.fade_end + self.fade_target - fade_z_pos) /
+                              denom)
+                    factor = constrain(factor, 0., 1.)
             final_z_adj = factor * z_adj + self.fade_target
             self.last_position[:] = [x, y, z - final_z_adj, e]
         return list(self.last_position)
@@ -286,31 +292,45 @@ class BedMesh:
         else:
             self.z_mesh.print_probed_matrix(gcmd.respond_info)
             self.z_mesh.print_mesh(gcmd.respond_raw, self.horizontal_move_z)
-    cmd_BED_MESH_OUTPUT_FILE_help = "Retrieve interpolated grid of probed z-points to file"
+    cmd_BED_MESH_OUTPUT_FILE_help = (
+        "Retrieve interpolated grid of probed z-points to file")
     def cmd_BED_MESH_OUTPUT_FILE(self, gcmd):
+        filename = gcmd.get('FILE', "bed_mesh_output.txt").strip()
+        clean_name = os.path.basename(filename)
+        is_invalid = (not clean_name or clean_name != filename
+                      or any(sep in filename
+                             for sep in ('/', '\\', '..', '\0')))
+        if is_invalid:
+            raise gcmd.error(
+                "bed_mesh: Invalid file name '%s' - "
+                "path traversal not allowed" % (filename,))
         if self.z_mesh is None:
             gcmd.respond_info("Bed has not been probed")
+            return
+        import time
+        date_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        vsd = self.printer.lookup_object('virtual_sdcard', None)
+        if vsd is None:
+            gcmd.respond_info("No virtual_sdcard dir to save bed_mesh data")
+            logdir = '/tmp/calibration_data'
         else:
-            import time, os
-            date_str = time.strftime("%Y-%m-%d %H:%M:%S")
-            vsd = self.printer.lookup_object('virtual_sdcard', None)
-            if vsd is None:
-                gcmd.respond_info("No virtual_sdcard dir to save bed_mesh data")
-                logdir = '/tmp/calibration_data'
-            else:
-                logdir = f'{vsd.sdcard_dirname}/calibration_data'
-            if not os.path.exists(logdir):
-                os.makedirs(logdir)
-            logfile = gcmd.get('FILE', "bed_mesh_output.txt")
-            logfile = os.path.join(logdir, logfile)
-            file_size = os.path.getsize(logfile) if os.path.exists(logfile) else 0
-            # if file size is larger than 5MiB, rename it to one with suffix '.old'
-            if file_size > 5 * 1024 * 1024:
-                os.rename(logfile, logfile + ".old")
-            content = "\nTest Date: %s\n" % date_str
-            content += self.z_mesh.print_probed_matrix()
-            content += self.z_mesh.print_mesh(move_z=self.horizontal_move_z)
-            queuefile.async_append_file(logfile, content)
+            logdir = "%s/calibration_data" % (vsd.sdcard_dirname,)
+        if not os.path.exists(logdir):
+            os.makedirs(logdir)
+        logfile = os.path.abspath(os.path.join(logdir, clean_name))
+        base_dir = os.path.abspath(logdir)
+        if not logfile.startswith(base_dir + os.sep):
+            raise gcmd.error(
+                "bed_mesh: Security violation: output file path escapes "
+                "calibration directory")
+        file_size = os.path.getsize(logfile) if os.path.exists(logfile) else 0
+        # if file size is larger than 5MiB, rename it to one with suffix '.old'
+        if file_size > 5 * 1024 * 1024:
+            os.rename(logfile, logfile + ".old")
+        content = "\nTest Date: %s\n" % date_str
+        content += self.z_mesh.print_probed_matrix()
+        content += self.z_mesh.print_mesh(move_z=self.horizontal_move_z)
+        queuefile.async_append_file(logfile, content)
     cmd_BED_MESH_MAP_help = "Serialize mesh and output to terminal"
     def cmd_BED_MESH_MAP(self, gcmd):
         if self.z_mesh is not None:
@@ -1165,11 +1185,15 @@ class ProbeManager:
                     status = heater_bed.get_status(curtime)
                     target_temp = status['target']
                 if preheat_duration > 0 and target_temp > 0:
-                    cur_sta = machine_state_manager.get_status()
-                    if str(cur_sta["main_state"]) == "PRINTING":
-                        self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=BED_PREHEATING")
-                    else:
-                        self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=BED_LEVELING ACTION=BED_PREHEATING")
+                    if machine_state_manager is not None:
+                        cur_sta = machine_state_manager.get_status()
+                        if str(cur_sta.get("main_state", "")) == "PRINTING":
+                            self.gcode.run_script_from_command(
+                                "SET_ACTION_CODE ACTION=BED_PREHEATING")
+                        else:
+                            self.gcode.run_script_from_command(
+                                "SET_MAIN_STATE MAIN_STATE=BED_LEVELING "
+                                "ACTION=BED_PREHEATING")
                     with self.lock:
                         self.preheat_total_duration = preheat_duration
                         self.state = BedMeshProbeState.PREHEART
@@ -1177,7 +1201,9 @@ class ProbeManager:
                     start_time = reactor.monotonic()
                     total_duration = preheat_duration
                     last_report_second = -1
-                    while not self.abort_flag and self.state == BedMeshProbeState.PREHEART and not self.printer.is_shutdown():
+                    while (not self.abort_flag and
+                           self.state == BedMeshProbeState.PREHEART and
+                           not self.printer.is_shutdown()):
                         current_time = reactor.monotonic()
                         elapsed_time = current_time - start_time
                         remaining_time = max(0, total_duration - elapsed_time)
@@ -1186,7 +1212,8 @@ class ProbeManager:
                             last_report_second = current_second
                             self.preheat_remaining_time = current_second
                             self._update_bed_mesh_status()
-                            self.gcode.respond_info(f"Bed preheating: {current_second}s left")
+                            self.gcode.respond_info(
+                                "Bed preheating: %ds left" % (current_second,))
                         if remaining_time <= 0:
                             break
                         reactor.pause(current_time + 0.2)
@@ -1257,16 +1284,22 @@ class ProbeManager:
 
     def abort_probe(self):
         if self.is_inductance_coil_probe:
-            machine_state_manager = self.printer.lookup_object('machine_state_manager', None)
+            machine_state_manager = self.printer.lookup_object(
+                'machine_state_manager', None)
+            run_exit_script = False
             with self.lock:
                 if (self.state == BedMeshProbeState.PROBING or
-                    self.state == BedMeshProbeState.PREHEART or self.state == BedMeshProbeState.PRESACN):
+                    self.state == BedMeshProbeState.PREHEART or
+                    self.state == BedMeshProbeState.PRESACN):
                     self.abort_flag = True
                     self.state = BedMeshProbeState.ABORTING
-                elif (machine_state_manager is not None and
-                      str(machine_state_manager.get_status()["main_state"]) == "BED_LEVELING"):
-                    self.gcode.run_script_from_command("EXIT_TO_IDLE REQ_FROM_STATE=BED_LEVELING")
-                    # self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=IDLE")
+                elif machine_state_manager is not None:
+                    status = machine_state_manager.get_status()
+                    if str(status.get("main_state", "")) == "BED_LEVELING":
+                        run_exit_script = True
+            if run_exit_script:
+                self.gcode.run_script_from_command(
+                    "EXIT_TO_IDLE REQ_FROM_STATE=BED_LEVELING")
 
     def get_zero_ref_pos(self):
         return self.zero_ref_pos
@@ -1458,8 +1491,8 @@ class ProbeManager:
         # Check to see if this is the first corner
         first_corner = False
         sorted_sub_idx = sorted(self.substitutes.keys())
-        if sub_cnt == 2 and idx < len(sorted_sub_idx):
-            first_corner = sorted_sub_idx[idx] == idx
+        if sub_cnt == 2 and sorted_sub_idx:
+            first_corner = (idx == sorted_sub_idx[0])
         yield subs[0], True
         if sub_cnt == 1:
             return
@@ -2079,15 +2112,37 @@ class ProfileManager:
                 "The SAVE_CONFIG command will update the printer config\n"
                 "file and restart the printer" %
                 (('\n').join(self.incompatible_profiles)))
+    def _get_custom_profile_path(self, prof_name):
+        if not self.save_custom_path or not self.config_dir:
+            return None
+        clean_name = os.path.basename(prof_name.strip())
+        is_invalid = (not clean_name or clean_name != prof_name
+                      or any(sep in prof_name
+                             for sep in ('/', '\\', '..', '\0')))
+        if is_invalid:
+            raise self.gcode.error(
+                "bed_mesh: Invalid profile name '%s' - "
+                "path traversal not allowed" % (prof_name,))
+        lower_prof_name = clean_name.lower()
+        fname = "bed_mesh_%s.json" % (lower_prof_name,)
+        file_path = os.path.abspath(os.path.join(self.config_dir, fname))
+        base_dir = os.path.abspath(self.config_dir)
+        if not file_path.startswith(base_dir + os.sep):
+            raise self.gcode.error(
+                "bed_mesh: Security violation: profile path escapes "
+                "configuration directory")
+        return file_path
     def _save_profile_custom(self, file_path, data_dict={}):
-        if not data_dict:
+        if not data_dict or not file_path:
             return False
         try:
             json_content = json.dumps(data_dict, indent=4)
-            queuefile.async_write_file(file_path, json_content, safe_write=True)
+            queuefile.async_write_file(file_path, json_content,
+                                       safe_write=True)
             return True
         except Exception as e:
-            logging.exception(f"Failed to write bed_mesh_data file: {file_path}")
+            logging.exception("Failed to write bed_mesh_data file: %s"
+                              % (file_path,))
             return False
     def save_profile(self, prof_name):
         save_to_cfg = False
@@ -2107,12 +2162,12 @@ class ProfileManager:
         profile['mesh_params'] = collections.OrderedDict(mesh_params)
         self.profiles = profiles
         if self.save_custom_path:
-            lower_prof_name = prof_name.lower()
             bed_mesh_data = {}
             bed_mesh_data['version'] = PROFILE_VERSION
             bed_mesh_data['profile'] = profile
-            file_path = os.path.join(self.config_dir, f"bed_mesh_{lower_prof_name}.json")
-            save_to_cfg = not self._save_profile_custom(file_path, bed_mesh_data)
+            file_path = self._get_custom_profile_path(prof_name)
+            save_to_cfg = not self._save_profile_custom(file_path,
+                                                        bed_mesh_data)
 
         if not self.save_custom_path or save_to_cfg:
             configfile = self.printer.lookup_object('configfile')
@@ -2140,9 +2195,8 @@ class ProfileManager:
     def _load_profile_custom(self, prof_name):
         if not self.save_custom_path:
             return None
-        lower_prof_name = prof_name.lower()
-        file_path = os.path.join(self.config_dir, f"bed_mesh_{lower_prof_name}.json")
-        if not os.path.exists(file_path):
+        file_path = self._get_custom_profile_path(prof_name)
+        if not file_path or not os.path.exists(file_path):
             return None
         try:
             with open(file_path, 'r') as f:
@@ -2184,17 +2238,18 @@ class ProfileManager:
     def _remove_profile_custom(self, prof_name):
         if not self.save_custom_path:
             return False
-        lower_prof_name = prof_name.lower()
-        file_path = os.path.join(self.config_dir, f"bed_mesh_{lower_prof_name}.json")
-        if not os.path.exists(file_path):
-            logging.info(f"bed_mesh: Profile file {file_path} not found, skip removal")
+        file_path = self._get_custom_profile_path(prof_name)
+        if not file_path or not os.path.exists(file_path):
+            logging.info("bed_mesh: Profile file %s not found, skip removal"
+                         % (file_path,))
             return False
         try:
             os.remove(file_path)
-            logging.info(f"bed_mesh: Removed profile file {file_path}")
+            logging.info("bed_mesh: Removed profile file %s" % (file_path,))
             return True
         except Exception as e:
-            logging.error(f"bed_mesh: Failed to remove profile file {file_path}, error: {str(e)}")
+            logging.error("bed_mesh: Failed to remove profile file %s: %s"
+                          % (file_path, str(e)))
             return False
     def remove_profile(self, prof_name):
         self._remove_profile_custom(prof_name)

@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-import logging, os, json, copy, queuefile
+import logging, os, json, copy, threading, queuefile
 
 EXCEPTION_PERSISTENT_FILE = 'exception_persistent.json'
 
@@ -49,6 +49,8 @@ class ExceptionManager:
         self.exceptions = []
         self.reported_exceptions = []
         self.async_exceptions = []
+        self._async_lock = threading.Lock()
+        self._persistent_cache = None
         self.list = ExceptionList()
 
         self.file_lock = self.reactor.mutex()
@@ -165,40 +167,47 @@ class ExceptionManager:
     def _read_exception_file(self):
         """Read the persistent exception file. Uses the async read thread when
         the reactor is running (non-blocking), else synchronous (startup)."""
+        if self._persistent_cache is not None:
+            return dict(self._persistent_cache)
+        data = {}
         if getattr(self.reactor, '_g_dispatch', None) is not None:
             try:
                 from asyncfilereader import get_async_file_io
                 reader = get_async_file_io()
                 req = reader.submit_read(self.exception_file_path, parse_json=True)
                 result = reader.wait(req, self.reactor)
-                return result if isinstance(result, dict) else {}
+                data = result if isinstance(result, dict) else {}
             except FileNotFoundError:
-                return {}
+                data = {}
             except Exception:
                 logging.exception("Error loading persistent exceptions")
-                return {}
-        if not os.path.exists(self.exception_file_path):
-            return {}
-        try:
-            with open(self.exception_file_path, 'r') as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {}
-        except Exception as e:
-            logging.error(f"Error loading persistent exceptions: {str(e)}")
-            return {}
+                data = {}
+        elif os.path.exists(self.exception_file_path):
+            try:
+                with open(self.exception_file_path, 'r') as f:
+                    content = json.load(f)
+                data = content if isinstance(content, dict) else {}
+            except Exception as e:
+                logging.error(f"Error loading persistent exceptions: {str(e)}")
+                data = {}
+        self._persistent_cache = data
+        return dict(self._persistent_cache)
 
     def save_persistent_exception(self, coded_code, level, message):
         if not self._validate_coded_key(coded_code):
             logging.error(f"Invalid coded_code format: {coded_code}")
             return False
 
-        data = self._load_persistent_exceptions()
-        if coded_code in data and data[coded_code]['message'] == message and data[coded_code]['level'] == level:
+        if self._persistent_cache is None:
+            self._load_persistent_exceptions()
+        if (coded_code in self._persistent_cache and
+                self._persistent_cache[coded_code].get('message') == message and
+                self._persistent_cache[coded_code].get('level') == level):
             logging.warning(f"Exception with coded_code {coded_code} already exists in persistent storage.")
             return True  # Already exists
-        data[coded_code] = {'level': level, 'message': message}
+        self._persistent_cache[coded_code] = {'level': level, 'message': message}
         try:
-            json_content = json.dumps(data, indent=4)
+            json_content = json.dumps(self._persistent_cache, indent=4)
             queuefile.async_write_file(self.exception_file_path, json_content, safe_write=True)
             return True
         except Exception as e:
@@ -210,15 +219,16 @@ class ExceptionManager:
             logging.error(f"Invalid coded_code format: {coded_code}")
             return False
 
-        data = self._load_persistent_exceptions()
-        if coded_code not in data:
+        if self._persistent_cache is None:
+            self._load_persistent_exceptions()
+        if coded_code not in self._persistent_cache:
             # logging.warning(f"Exception with coded_code {coded_code} does not exist in persistent storage.")
             return False
 
-        del data[coded_code]
+        del self._persistent_cache[coded_code]
         logging.info(f"Clearing persistent exception: {coded_code}")
         try:
-            json_content = json.dumps(data, indent=4)
+            json_content = json.dumps(self._persistent_cache, indent=4)
             queuefile.async_write_file(self.exception_file_path, json_content, safe_write=True)
             return True
         except Exception as e:
@@ -226,6 +236,8 @@ class ExceptionManager:
             return False
 
     def remove_persistent_exceptions(self):
+        if self._persistent_cache is not None:
+            self._persistent_cache.clear()
         try:
             queuefile.async_delete_file(self.exception_file_path)
             return True
@@ -236,9 +248,14 @@ class ExceptionManager:
     def _handle_async_exception(self, eventtime):
         # got one exception from queue to raise it to moonraker
         # must be attention to the order of exceptions
-        id, index, code, message, oneshot, level, is_persistent = self.async_exceptions.pop(0)
+        with self._async_lock:
+            if not self.async_exceptions:
+                return self.reactor.NEVER
+            item = self.async_exceptions.pop(0)
+            has_more = len(self.async_exceptions) > 0
+        id, index, code, message, oneshot, level, is_persistent = item
         self.raise_exception(id, index, code, message, oneshot, level, is_persistent)
-        if len(self.async_exceptions) > 0:
+        if has_more:
             return eventtime + 0.001
         return self.reactor.NEVER
 
@@ -253,8 +270,10 @@ class ExceptionManager:
             'cancel': 3
         }
         level = level if level is not None else action_levels.get(action, 3)
-        self.async_exceptions.append((id, index, code, message, oneshot, level, is_persistent))
-        self.reactor.update_timer(self.async_handle_timer, self.reactor.NOW)
+        with self._async_lock:
+            self.async_exceptions.append((id, index, code, message, oneshot, level, is_persistent))
+        self.reactor.register_async_callback(
+            lambda et: self.reactor.update_timer(self.async_handle_timer, self.reactor.NOW))
 
     def raise_exception(self, id, index, code, message, oneshot=1, level=3, is_persistent=0):
         if not oneshot:

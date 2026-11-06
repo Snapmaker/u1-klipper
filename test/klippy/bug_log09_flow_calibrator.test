@@ -1,0 +1,7 @@
+# Test case for BUG-LOG-09: Falsy 0.0 & _get_next_k handling in flow_calibrator
+CONFIG bug_log09_flow_calibrator.cfg
+DICTIONARY simulator.dict
+
+# Test _get_next_k with zero area measurements (must return midpoint, not None)
+FLOW_TEST_NEXT_K KL=0.01 KR=0.03 AL=0.0 AR=0.0
+

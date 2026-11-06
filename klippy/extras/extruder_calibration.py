@@ -24,7 +24,7 @@ class ExtruderParkCalibration:
         self.calibration_results = {}
         self.extruder_theoretical_position = {}
         self.extruder_tolerance = {}
-        self.extruder_y_cal_second_posiions = {}
+        self.extruder_y_cal_second_positions = {}
         self.y_calibration_results = {}
         self.err_msg = ""
         self.calibration_index = 0
@@ -76,13 +76,13 @@ class ExtruderParkCalibration:
                 self.extruder_theoretical_position[section] = theoretical_position
                 tolerance = config.getfloat(section + '_tolerance', None)
                 self.extruder_tolerance[section] = tolerance
-                probe_mode_choice = config.getint('_probe_mode', self.default_probe_mode, minval=0, maxval=1)
+                probe_mode_choice = config.getint(section + '_probe_mode', self.default_probe_mode, minval=0, maxval=1)
                 self.extruder_probe_mode[section] = probe_mode_choice
                 start_polarity = config.getboolean(section + '_polarity_invert', self.default_start_polarity)
                 self.extruder_start_polarity[section] = start_polarity
                 y_cal_second_pos = config.getlists(section + '_y_cal_second_position', None, seps=(',', '\n'), count=2, parser=float)
                 if y_cal_second_pos is not None:
-                    self.extruder_y_cal_second_posiions[section] = list(y_cal_second_pos[0])
+                    self.extruder_y_cal_second_positions[section] = list(y_cal_second_pos[0])
             else:
                 break
 
@@ -124,6 +124,7 @@ class ExtruderParkCalibration:
             probe_obj = self.printer.lookup_object('probe', None)
             if probe_obj is None:
                 raise gcmd.error("Probe object not found")
+            orig_mcu_probe = getattr(probe_obj, 'mcu_probe', None)
 
             extruder = toolhead.get_extruder()
             activate_status = extruder.get_extruder_activate_status()
@@ -220,8 +221,8 @@ class ExtruderParkCalibration:
                         distance = 0.0
 
                     # y calibration second position
-                    if self.y_cal_enable:
-                        start_position = list(self.extruder_y_cal_second_posiions[section])
+                    if self.y_cal_enable and section in self.extruder_y_cal_second_positions:
+                        start_position = list(self.extruder_y_cal_second_positions[section])
                         gcmd.respond_raw("Moving to position: %.3f, %.3f" % (start_position[0], start_position[1]))
                         cur_pos = toolhead.get_position()
                         if cur_pos[1] > start_position[1]:
@@ -231,7 +232,8 @@ class ExtruderParkCalibration:
                         toolhead.wait_moves()
                         self.reactor.pause(self.reactor.monotonic() + 1)
                         point2_voltage = self.get_analog_output()
-                        gcmd.respond_raw("position: %.3f, %.3f laser voltage: %.3f" % (start_position[0], start_position[1], point2_voltage))
+                        v_str = "%.3f" % point2_voltage if point2_voltage is not None else "None"
+                        gcmd.respond_raw("position: %.3f, %.3f laser voltage: %s" % (start_position[0], start_position[1], v_str))
                         # aver_voltage = (point2_voltage+point1_voltage)/2
                         aver_voltage = point2_voltage
 
@@ -299,10 +301,14 @@ class ExtruderParkCalibration:
             self.err_msg = str_err
             raise
         finally:
+            if probe_obj is not None and orig_mcu_probe is not None:
+                probe_obj.set_mcu_probe(orig_mcu_probe)
             self.mcu_probe.mcu_endstop._invert = self.invert
 
     def cmd_PROBE_SINGLE_POINT(self, gcmd):
         toolhead = self.printer.lookup_object('toolhead')
+        probe_obj = self.printer.lookup_object('probe', None)
+        orig_mcu_probe = getattr(probe_obj, 'mcu_probe', None)
         try:
             self.state = ExtruderParkCalibrationStep.PROBING_START
             self.err_msg = ""
@@ -327,6 +333,7 @@ class ExtruderParkCalibration:
             probe_obj = self.printer.lookup_object('probe', None)
             if probe_obj is None:
                 raise gcmd.error("Probe object not found")
+            orig_mcu_probe = getattr(probe_obj, 'mcu_probe', None)
 
             # Configure probe parameters
             probe_params = {
@@ -383,6 +390,8 @@ class ExtruderParkCalibration:
             self.err_msg = str_err
             raise
         finally:
+            if probe_obj is not None and orig_mcu_probe is not None:
+                probe_obj.set_mcu_probe(orig_mcu_probe)
             self.mcu_probe.mcu_endstop._invert = self.invert
 
     def get_status(self, eventtime):
@@ -396,7 +405,7 @@ class ExtruderParkCalibration:
         }
 
     def get_analog_output(self):
-        if self.adc_button is None:
+        if self.adc_button is None or getattr(self.adc_button, 'last_adc_value', None) is None:
             return None
         # real voltage = (adc value) * (refrence voltage 3.3) * (Resistance attenuation factor 1.5)
         voltage = self.adc_button.last_adc_value * 3.3 * 1.5

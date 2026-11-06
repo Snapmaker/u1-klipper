@@ -237,7 +237,7 @@ class Homing:
                 homepos = self._fill_coord(movepos)
                 axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
                 move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
-                retract_r = min(1., hi.retract_dist / move_d)
+                retract_r = min(1., hi.retract_dist / move_d) if move_d > 0. else 0.
                 retractpos = [hp - ad * retract_r
                             for hp, ad in zip(homepos, axes_d)]
                 self.toolhead.move(retractpos, hi.retract_speed)

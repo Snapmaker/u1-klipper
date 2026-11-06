@@ -1,0 +1,6 @@
+# Test case for BUG-LOG-11: substitute_points indexing
+CONFIG bug_log11_bed_mesh.cfg
+DICTIONARY simulator.dict
+
+BED_MESH_OUTPUT PGP=1
+

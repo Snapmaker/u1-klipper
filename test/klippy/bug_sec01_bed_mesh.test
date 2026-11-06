@@ -1,0 +1,7 @@
+# Test case for BUG-SEC-01: Path Traversal in bed_mesh ProfileManager
+CONFIG bug_sec01_bed_mesh.cfg
+DICTIONARY simulator.dict
+SHOULD_FAIL
+
+# Attempt path traversal via profile load
+BED_MESH_PROFILE LOAD=../../evil_path

@@ -19,7 +19,8 @@ class PowerLossCheck:
         pin = config.get('pin')
         pin_params = ppins.lookup_pin(pin, can_invert=True, can_pullup=True)
         self._mcu = pin_params['chip']
-        cfg_trigger_time = config.getfloat('power_loss_trigger_time', 0.0109, above=0.)
+        cfg_trigger_time = config.getfloat('power_loss_trigger_time', 0.0109,
+                                           minval=0.0001, maxval=6.5535)
         self.power_loss_trigger_time = cfg_trigger_time
         if self.name == 'master':
             self._config_path = os.path.join(self.printer.get_snapmaker_config_dir(),
@@ -28,9 +29,15 @@ class PowerLossCheck:
             try:
                 with open(self._config_path, 'r', encoding='utf-8') as f:
                     val = json.load(f).get('power_loss_trigger_time')
-                if val is not None and val > 0:
-                    self.power_loss_trigger_time = float(val)
-                    trigger_source = "json config"
+                if val is not None:
+                    val = float(val)
+                    if 0.0001 <= val <= 6.5535:
+                        self.power_loss_trigger_time = val
+                        trigger_source = "json config"
+                    else:
+                        logging.warning(
+                            "power_loss_check: trigger time %.6f out of bounds, ignoring",
+                            val)
             except Exception:
                 pass
             logging.info("power_loss_check: power_loss_trigger_time=%.6f (from %s)",
@@ -85,10 +92,11 @@ class PowerLossCheck:
         self._oid = self._mcu.create_oid()
         clock = self._mcu.get_query_slot(self._oid)
         self._report_clock = self._mcu.seconds_to_clock(self.report_interval_time)
+        trigger_us = int(max(100, min(6553500, self.power_loss_trigger_time*1000000)))
         self._mcu.add_config_cmd(
             "config_power_loss_check oid=%d clock=%u power_loss_trigger_time=%u report_interval=%u duty_threshold=%u"
             " debounce_threshold=%u type_confirm_threshold=%u"
-            % (self._oid, clock, self.power_loss_trigger_time*1000000, self._report_clock, self.duty_threshold*1000000,
+            % (self._oid, clock, trigger_us, self._report_clock, self.duty_threshold*1000000,
                self.debounce_threshold, self.type_confirm_threshold))
 
         self.update_report_interval_cmd = self._mcu.lookup_command(
@@ -187,7 +195,11 @@ class PowerLossCheck:
         self.voltage_type = params['voltage_type']
         self.power_loss_flag = params['power_loss_flag']
         if self.initialized and self.high_level_tick != 0xFFFFFFFF and self.low_level_tick != 0xFFFFFFFF:
-            self.duty_percent =  self.high_level_tick / (self.high_level_tick + self.low_level_tick)
+            total_ticks = self.high_level_tick + self.low_level_tick
+            if total_ticks > 0:
+                self.duty_percent = self.high_level_tick / total_ticks
+            else:
+                self.duty_percent = 0.0
 
     def handle_report_power_loss_status(self, params):
         self._update_status_from_params(params)

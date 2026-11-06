@@ -35,6 +35,7 @@ class FeedPwmCfg:
 
 class FeedMotor:
     def __init__(self, printer, reactor, cfg:FeedPwmCfg):
+        self.printer = printer
         self.reactor = reactor
         ppins = printer.lookup_object('pins')
         self.max_value = cfg.max_value
@@ -80,64 +81,70 @@ class FeedMotor:
             self._motor_b.set_pwm(print_time + 0.01, 0)
     
     def run(self, dir, value):
-        while self._mutex_lock:
+        while self._mutex_lock and not self.printer.is_shutdown():
             self.reactor.pause(self.reactor.monotonic() + 0.1)
+        if self.printer.is_shutdown():
+            return
         self._mutex_lock = True
+        try:
+            val = max(0, min(self.max_value, value))
+            if val == 0:
+                dir = FEED_MOTOR_DIR_IDLE
 
-        val = max(0, min(self.max_value, value))
-        if val == 0:
-            dir = FEED_MOTOR_DIR_IDLE
-            
-        while 1:
-            if FEED_MOTOR_DIR_IDLE == self._dir:
-                if FEED_MOTOR_DIR_IDLE == dir:
-                    break
-                self._dir = dir
-                self._run(dir, val)
-                self.reactor.pause(self.reactor.monotonic() + 2 * FEED_MIN_TIME)
-            else:
-                if dir == self._dir:
+            while 1:
+                if FEED_MOTOR_DIR_IDLE == self._dir:
+                    if FEED_MOTOR_DIR_IDLE == dir:
+                        break
+                    self._dir = dir
                     self._run(dir, val)
                     self.reactor.pause(self.reactor.monotonic() + 2 * FEED_MIN_TIME)
+                else:
+                    if dir == self._dir:
+                        self._run(dir, val)
+                        self.reactor.pause(self.reactor.monotonic() + 2 * FEED_MIN_TIME)
+                    else:
+                        self._run(FEED_MOTOR_DIR_IDLE, 0)
+                        self.reactor.pause(self.reactor.monotonic() + FEED_MOTOR_HARD_PROTECT_TIME)
+                        self._dir = FEED_MOTOR_DIR_IDLE
+                        if FEED_MOTOR_DIR_IDLE != dir:
+                            self._dir = dir
+                            self._run(dir, val)
+                            self.reactor.pause(self.reactor.monotonic() + 2 * FEED_MIN_TIME)
+                break
+        finally:
+            self._mutex_lock = False
+
+    def run_one_cycle(self, dir, value):
+        while self._mutex_lock and not self.printer.is_shutdown():
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        if self.printer.is_shutdown():
+            return
+        self._mutex_lock = True
+        try:
+            val = max(0, min(self.max_value, value))
+            if val == 0:
+                dir = FEED_MOTOR_DIR_IDLE
+
+            while 1:
+                if FEED_MOTOR_DIR_IDLE == self._dir:
+                    if FEED_MOTOR_DIR_IDLE == dir:
+                        break
+                    self._dir = dir
+                    self._run_one_cycle(dir, val)
+                    self.reactor.pause(self.reactor.monotonic() + 2 * FEED_MIN_TIME)
+                    self._dir = FEED_MOTOR_DIR_IDLE
                 else:
                     self._run(FEED_MOTOR_DIR_IDLE, 0)
                     self.reactor.pause(self.reactor.monotonic() + FEED_MOTOR_HARD_PROTECT_TIME)
                     self._dir = FEED_MOTOR_DIR_IDLE
                     if FEED_MOTOR_DIR_IDLE != dir:
                         self._dir = dir
-                        self._run(dir, val)
+                        self._run_one_cycle(dir, val)
                         self.reactor.pause(self.reactor.monotonic() + 2 * FEED_MIN_TIME)
-            break
-        self._mutex_lock = False
-
-    def run_one_cycle(self, dir, value):
-        while self._mutex_lock:
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
-        self._mutex_lock = True
-
-        val = max(0, min(self.max_value, value))
-        if val == 0:
-            dir = FEED_MOTOR_DIR_IDLE
-
-        while 1:
-            if FEED_MOTOR_DIR_IDLE == self._dir:
-                if FEED_MOTOR_DIR_IDLE == dir:
-                    break
-                self._dir = dir
-                self._run_one_cycle(dir, val)
-                self.reactor.pause(self.reactor.monotonic() + 2 * FEED_MIN_TIME)
-                self._dir = FEED_MOTOR_DIR_IDLE
-            else:
-                self._run(FEED_MOTOR_DIR_IDLE, 0)
-                self.reactor.pause(self.reactor.monotonic() + FEED_MOTOR_HARD_PROTECT_TIME)
-                self._dir = FEED_MOTOR_DIR_IDLE
-                if FEED_MOTOR_DIR_IDLE != dir:
-                    self._dir = dir
-                    self._run_one_cycle(dir, val)
-                    self.reactor.pause(self.reactor.monotonic() + 2 * FEED_MIN_TIME)
-                    self._dir = FEED_MOTOR_DIR_IDLE
-            break
-        self._mutex_lock = False
+                        self._dir = FEED_MOTOR_DIR_IDLE
+                break
+        finally:
+            self._mutex_lock = False
 
 
 class FeedFacTest:
@@ -248,7 +255,7 @@ class FeedFacTest:
             self.reactor.pause(self.reactor.monotonic() + 2 * FEED_MIN_TIME)
             
             if self._output_pin_state != self._input_pin_state:
-                raise
+                raise Exception("Output and input pin state mismatch")
 
             self._output_pin_state = 0
             for i in range (len(self._output_pin_list)):
@@ -264,7 +271,7 @@ class FeedFacTest:
             self.reactor.pause(self.reactor.monotonic() + 2 * FEED_MIN_TIME)
             
             if self._output_pin_state != self._input_pin_state:
-                raise
+                raise Exception("Output and input pin state mismatch")
 
             self.motor.run(FEED_MOTOR_DIR_A, 0.5)
             self.reactor.pause(self.reactor.monotonic() + 0.5)

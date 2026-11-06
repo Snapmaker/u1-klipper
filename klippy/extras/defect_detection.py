@@ -75,7 +75,7 @@ class DefectDetection:
         self.debug_mode = config.getboolean('debug_mode', False)
         self.bed_detect_pos_x = config.getfloat('bed_detect_pos_x', 5.0)
         self.bed_detect_pos_y = config.getfloat('bed_detect_pos_y', 5.0)
-        self.bed_detect_probe_distance = config.getfloat('bed_detect_probe_distance', 50.0)
+        self.bed_detect_probe_distance = config.getfloat('bed_detect_probe_distance', 50.0, above=0.)
         self.ignore_detect_layer = config.getint('ignore_detect_layer', 30)
         self.clean_bed_threshold_high = config.getfloat('clean_bed_threshold_high', CLEAN_BED_THRESHOLD_HIGH)
         self.clean_bed_threshold_low = config.getfloat('clean_bed_threshold_low', CLEAN_BED_THRESHOLD_LOW)
@@ -87,6 +87,7 @@ class DefectDetection:
         self.nozzle_threshold_low = config.getfloat('nozzle_threshold_low', NOZZLE_THRESHOLD_LOW)
 
         self.mqtt_client = None
+        self.mqtt_jsonrpc = None
         self.last_request_time = 0
         self.check_noodle_result = []
         self.check_residue_result = []
@@ -133,14 +134,18 @@ class DefectDetection:
         if self.mqtt_client is None:
             logging.error("[defect_detection]: cannot load necessary objects.")
             return
-        self.mqtt_jsonrpc = JSONRPCClient(
-                                reactor=self.reactor,
-                                transport_type=JSONRPC_TRANSPORT_MQTT,
-                                mqtt_client=self.mqtt_client,
-                                request_topic=REQUEST_TOPIC,
-                                response_topic=RESPONSE_TOPIC,
-                                qos=0)
-        self.mqtt_jsonrpc.connect()
+        try:
+            self.mqtt_jsonrpc = JSONRPCClient(
+                                    reactor=self.reactor,
+                                    transport_type=JSONRPC_TRANSPORT_MQTT,
+                                    mqtt_client=self.mqtt_client,
+                                    request_topic=REQUEST_TOPIC,
+                                    response_topic=RESPONSE_TOPIC,
+                                    qos=0)
+            self.mqtt_jsonrpc.connect()
+        except Exception as e:
+            logging.error(f"[defect_detection]: cannot load jsonrpc: {e}")
+            self.mqtt_jsonrpc = None
 
     def _handle_start_print_job(self):
         self.reset_check_data()
@@ -372,7 +377,7 @@ class DefectDetection:
             return True
 
     def request_detect(self):
-        if self.mqtt_client is None:
+        if self.mqtt_client is None or self.mqtt_jsonrpc is None:
             return
 
         if self.config['main_enable'] == False:
@@ -403,11 +408,14 @@ class DefectDetection:
             return
 
         # logging.info(f"[defect_detection] request params: {params}")
-        self.mqtt_jsonrpc.send_request("camera.detect_capture",
-                                        params,
-                                        self.response_callback)
+        if self.mqtt_jsonrpc is not None:
+            self.mqtt_jsonrpc.send_request("camera.detect_capture",
+                                            params,
+                                            self.response_callback)
 
     def _request_detect_noodle_first_sync(self):
+        if self.mqtt_client is None or self.mqtt_jsonrpc is None:
+            return
         try:
             self.last_request_time = self.reactor.monotonic()
             noodle_detect_threshold = self.noodle_threshold_low
@@ -424,6 +432,9 @@ class DefectDetection:
             }
 
             logging.info(f"[defect_detection] request params: {params}")
+
+            if self.mqtt_jsonrpc is None:
+                return
 
             response_info = self.mqtt_jsonrpc.send_request_with_response(
                                         "camera.detect_capture",
@@ -475,7 +486,7 @@ class DefectDetection:
 
     def request_detect_clean_bed_sync(self, ignore_ratio=None, z_pos=None, detect_status=None):
         try:
-            if self.mqtt_client is None:
+            if self.mqtt_client is None or self.mqtt_jsonrpc is None:
                 return False
 
             if self.config['main_enable'] == False:
@@ -506,6 +517,9 @@ class DefectDetection:
             }
             logging.info(f"[defect_detection] request params: {params}")
 
+            if self.mqtt_jsonrpc is None:
+                return False
+
             response_info = self.mqtt_jsonrpc.send_request_with_response(
                                         "camera.detect_capture",
                                         params,
@@ -530,7 +544,7 @@ class DefectDetection:
             return False
 
     def request_detect_nozzle_sync(self):
-        if self.mqtt_client is None:
+        if self.mqtt_client is None or self.mqtt_jsonrpc is None:
             return False
 
         if self.config['main_enable'] == False or self.config['nozzle']['enable'] == False:
@@ -548,6 +562,9 @@ class DefectDetection:
                     "sensitivity": self.config['nozzle']['sensitivity']
                 }
             }
+
+            if self.mqtt_jsonrpc is None:
+                return False
 
             response_info = self.mqtt_jsonrpc.send_request_with_response(
                                         "camera.detect_capture",
@@ -698,7 +715,7 @@ class DefectDetection:
                 logging.error("[defect_detection] config save failed")
 
     def cmd_DEFECT_DETECTION_START(self, gcmd):
-        if self.mqtt_client is None:
+        if self.mqtt_client is None or self.mqtt_jsonrpc is None:
             logging.error("[defect_detection] start error, mqtt not ready!")
             return
 
@@ -717,7 +734,7 @@ class DefectDetection:
         self.gcode.run_script_from_command("SET_LED LED=cavity_led WHITE=1\r\n")
 
     def cmd_DEFECT_DETECTION_DETECT(self, gcmd):
-        if self.mqtt_client is None:
+        if self.mqtt_client is None or self.mqtt_jsonrpc is None:
             return
 
         if self.config['main_enable'] == False:
@@ -733,7 +750,7 @@ class DefectDetection:
         self.request_detect()
 
     def cmd_DEFECT_DETECT_NOODLE_FIRST(self, gcmd):
-        if self.mqtt_client is None:
+        if self.mqtt_client is None or self.mqtt_jsonrpc is None:
             return
 
         if self.config['main_enable'] == False:
@@ -748,7 +765,7 @@ class DefectDetection:
         toolhead.wait_moves()
 
     def cmd_DEFECT_DETECTION_DETECT_BED(self, gcmd):
-        if self.mqtt_client is None:
+        if self.mqtt_client is None or self.mqtt_jsonrpc is None:
             logging.error("[defect_detection] cannot detect bed, mqtt not ready!")
             return
 
@@ -781,13 +798,16 @@ class DefectDetection:
         toolhead.set_position(start_pos, homing_axes=[2])
 
         try:
+            if self._request_cancel_print or self.printer.is_shutdown():
+                return
+
             machine_state_manager = self.printer.lookup_object('machine_state_manager', None)
             if machine_state_manager is not None:
                 machine_sta = machine_state_manager.get_status()
                 if str(machine_sta["main_state"]) == "PRINTING":
                     self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=PRINTING ACTION=PRINT_BED_DETECTING")
 
-            if self._request_cancel_print == True:
+            if self._request_cancel_print or self.printer.is_shutdown():
                 return
 
             self.gcode.run_script_from_command(f"G1 Y{self.bed_detect_pos_y} F10000")
@@ -805,9 +825,10 @@ class DefectDetection:
                 is_dirty_bed = True
                 return
 
-            probe_max_times = max(1, int(start_pos[2] / self.bed_detect_probe_distance))
+            probe_dist = max(0.001, self.bed_detect_probe_distance)
+            probe_max_times = max(1, int(start_pos[2] / probe_dist))
             for probe_times in range(probe_max_times):
-                if self._request_cancel_print == True:
+                if self._request_cancel_print or self.printer.is_shutdown():
                     return
                 logging.info("[defect_detection] bed probe times: %d", probe_times + 1)
                 try:
@@ -826,12 +847,12 @@ class DefectDetection:
                     pos_1 = list(toolhead.get_position())
                     if start_pos[2] - pos_1[2] < self.bed_detect_probe_distance - 0.2:
                         for i in range(3):
-                            if self._request_cancel_print == True:
+                            if self._request_cancel_print or self.printer.is_shutdown():
                                 return
                             current_pos = list(toolhead.get_position())
                             toolhead.manual_move([None, None, min(current_pos[2] + 2, start_pos[2])], 30)
                             toolhead.wait_moves()
-                            if self._request_cancel_print == True:
+                            if self._request_cancel_print or self.printer.is_shutdown():
                                 return
                             try:
                                 self.gcode.run_script_from_command(f"PROBE SAMPLE_TRIG_FREQ=450 SAMPLES=1 PROBE_SPEED=5 SAMPLE_DIST_Z={self.bed_detect_probe_distance}")
@@ -864,7 +885,7 @@ class DefectDetection:
                             return
 
                         for i in range(3):
-                            if self._request_cancel_print == True:
+                            if self._request_cancel_print or self.printer.is_shutdown():
                                 return
                             tmp_detect_status = ""
                             if i == 2:
@@ -891,7 +912,7 @@ class DefectDetection:
                             return
                         toolhead.manual_move([None, None, current_pos[2] + 5], 30)
                         toolhead.wait_moves()
-                        if self._request_cancel_print == True:
+                        if self._request_cancel_print or self.printer.is_shutdown():
                             return
                         current_pos = list(toolhead.get_position())
                         if self.request_detect_clean_bed_sync(ignore_ratio=0,
@@ -910,7 +931,7 @@ class DefectDetection:
                             return
                         toolhead.manual_move([None, None, current_pos[2] + 5], 30)
                         toolhead.wait_moves()
-                        if self._request_cancel_print == True:
+                        if self._request_cancel_print or self.printer.is_shutdown():
                             return
                         current_pos = list(toolhead.get_position())
                         if probe_times == probe_max_times - 1:
@@ -930,7 +951,7 @@ class DefectDetection:
                         current_pos = list(toolhead.get_position())
                         toolhead.manual_move([None, None, current_pos[2] + 5], 30)
                         toolhead.wait_moves()
-                        if self._request_cancel_print == True:
+                        if self._request_cancel_print or self.printer.is_shutdown():
                             return
                         current_pos = list(toolhead.get_position())
                         if self.request_detect_clean_bed_sync(ignore_ratio=0,
@@ -940,27 +961,31 @@ class DefectDetection:
                         return
 
         finally:
-            current_pos = list(toolhead.get_position())
-            toolhead.manual_move([None, None, max(0, min(current_pos[2] + 5, start_pos[2]))], 30)
-            toolhead.wait_moves()
-
-            gcode_move.absolute_coord = gcode_move_status['absolute_coordinates']
-            toolhead.get_kinematics().note_z_not_homed()
-            toolhead.wait_moves()
-
-            if machine_state_manager is not None:
-                machine_sta = machine_state_manager.get_status()
-                if str(machine_sta["main_state"]) == "PRINTING":
-                    self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=PRINTING ACTION=IDLE")
+            is_aborted = self._request_cancel_print or self.printer.is_shutdown()
+            if not is_aborted:
+                current_pos = list(toolhead.get_position())
+                toolhead.manual_move([None, None, max(0, min(current_pos[2] + 5, start_pos[2]))], 30)
                 toolhead.wait_moves()
 
-            if is_dirty_bed == True:
-                logging.info("[defect_detection] detected dirty bed.")
-                self.ignore_detect_bed = True
-                self.defect_event_handler(CONFIRM_DIRTY_BED, from_command=True)
+            gcode_move.absolute_coord = gcode_move_status['absolute_coordinates']
+            if not self.printer.is_shutdown():
+                toolhead.get_kinematics().note_z_not_homed()
+                toolhead.wait_moves()
+
+            if not is_aborted:
+                if machine_state_manager is not None:
+                    machine_sta = machine_state_manager.get_status()
+                    if machine_sta and str(machine_sta.get("main_state", "")) == "PRINTING":
+                        self.gcode.run_script_from_command("SET_MAIN_STATE MAIN_STATE=PRINTING ACTION=IDLE")
+                    toolhead.wait_moves()
+
+                if is_dirty_bed == True:
+                    logging.info("[defect_detection] detected dirty bed.")
+                    self.ignore_detect_bed = True
+                    self.defect_event_handler(CONFIRM_DIRTY_BED, from_command=True)
 
     def cmd_DEFECT_DETECTION_DETECT_NOZZLE(self, gcmd):
-        if self.mqtt_client is None:
+        if self.mqtt_client is None or self.mqtt_jsonrpc is None:
             logging.error("[defect_detection] cannot detect nozzle, mqtt not ready!")
             return
 

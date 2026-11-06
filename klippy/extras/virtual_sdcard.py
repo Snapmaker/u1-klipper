@@ -168,6 +168,8 @@ class VirtualSD:
             try:
                 readpos = max(self.file_position - 1024, 0)
                 readcount = self.file_position - readpos
+                if self.current_file is None:
+                    return
                 fname = self.current_file.name
                 with open(fname, 'r', newline='') as f:
                     f.seek(readpos)
@@ -828,8 +830,10 @@ class VirtualSD:
     def force_record_pl_print_file_env(self, transfer_p_t=False):
         print_stats = self.printer.lookup_object('print_stats', None)
         if print_stats is not None and (print_stats.state == 'printing' or print_stats.state == 'paused'):
-            self.record_pl_print_file_env(self.current_file.name, self.get_pl_env_flag()[0], transfer_pause_time=transfer_p_t)
-            logging.info("Force record power loss print file env")
+            fname = getattr(self.current_file, 'name', None)
+            if fname is not None:
+                self.record_pl_print_file_env(fname, self.get_pl_env_flag()[0], transfer_pause_time=transfer_p_t)
+                logging.info("Force record power loss print file env")
     def get_pl_print_file_env(self):
         if self.pl_switch:
             try:
@@ -1202,7 +1206,7 @@ class VirtualSD:
                 f.seek(pl_save_data['file_pos'])
                 current_line = pl_save_data['line_count']
                 while current_line <= target_line:
-                    line = f.readline().decode('utf-8')
+                    line = f.readline().decode('utf-8', errors='replace')
                     last_file_pos = cur_file_pos
                     cur_file_pos = f.tell()
                     if not line:  # EOF
@@ -1228,6 +1232,9 @@ class VirtualSD:
                                     'last_move_file_index': last_file_index,
                                     'pl_save_data': pl_save_data,
                                }
+                if current_line != target_line:
+                    raise self.printer.command_error(
+                        f"Target line {target_line} was not reached in file {file_path}")
         except Exception as e:
             logging.exception("Failed to locate line by number")
             raise self.printer.command_error(f"Line location error: {str(e)}")
@@ -1320,7 +1327,10 @@ class VirtualSD:
             _pl_save_data['line'] = self.current_line_gcode
             if state_copy.get('gcode_id', None) is not None:
                 _pl_save_data['extruder'] = state_copy['gcode_id']
-            _pl_save_data['speed'] = state_copy['speed'] / state_copy['speed_factor']
+            speed_factor = state_copy.get('speed_factor', 1.0)
+            if not speed_factor or speed_factor <= 0.:
+                speed_factor = 1.0
+            _pl_save_data['speed'] = state_copy['speed'] / speed_factor
             _pl_save_data['max_accel'] = state_copy['accel']
             _pl_save_data['min_cruise_ratio'] = toolhead.min_cruise_ratio
             _pl_save_data['square_corner_velocity'] = toolhead.square_corner_velocity
@@ -1552,15 +1562,18 @@ class VirtualSD:
 
     def record_power_loss_info(self, interval_start_time, interval_end_time):
         if self.pl_switch and self.lines >= self.pl_notify_start_line:
+            fname = getattr(self.current_file, 'name', None)
             if self.lines == self.pl_notify_start_line:
                 self.notify_mcu_enable_power_loss(1, self.pl_mcu_flash_resume_line)
-                self.record_pl_print_file_env(self.current_file.name, self.get_pl_env_flag()[0])
+                if fname is not None:
+                    self.record_pl_print_file_env(fname, self.get_pl_env_flag()[0])
                 self.flush_pl_print_env()
                 interval_start_time = interval_end_time
 
             if interval_end_time-interval_start_time > 15:
                 interval_start_time = interval_end_time
-                self.record_pl_print_file_env(self.current_file.name, self.get_pl_env_flag()[0])
+                if fname is not None:
+                    self.record_pl_print_file_env(fname, self.get_pl_env_flag()[0])
         return interval_start_time, interval_end_time
 
     def record_pl_print_z_adjust_position(self, adjust_position, sync=False, flush=True, safe_write=True):
@@ -1608,11 +1621,22 @@ class VirtualSD:
         z_pos = toolhead.get_position()[2]
         homing_xyz_override = self.printer.lookup_object('homing_xyz_override', None)
         if homing_xyz_override is not None:
+            z_steppers = kin.rails[2].get_steppers() if len(kin.rails) > 2 else []
+            if z_steppers:
+                z_stepper = z_steppers[0]
+                z_stepper_pos = z_stepper.get_mcu_position()
+                dir_inverted = z_stepper.get_dir_inverted()[0]
+                step_dist = z_stepper.get_step_dist()
+            else:
+                z_stepper = next((s for s in steppers if getattr(s, 'get_name', lambda: '')().startswith('stepper_z')), None)
+                z_stepper_pos = z_stepper.get_mcu_position() if z_stepper else (stepper_mcu_pos[2] if len(stepper_mcu_pos) > 2 else 0)
+                dir_inverted = z_stepper.get_dir_inverted()[0] if z_stepper else 0
+                step_dist = z_stepper.get_step_dist() if z_stepper else 0.001
             homing_xyz_override.homing_stepper_z_info = {
-                    'stepper_z_pos': stepper_mcu_pos[2],
+                    'stepper_z_pos': z_stepper_pos,
                     'z_pos': z_pos - z_offset,
-                    'dir_inverted': kin.rails[2].get_steppers()[0].get_dir_inverted()[0],
-                    'step_dist':  kin.rails[2].get_steppers()[0].get_step_dist(),
+                    'dir_inverted': dir_inverted,
+                    'step_dist':  step_dist,
                 }
             return homing_xyz_override.homing_stepper_z_info
 
@@ -1841,6 +1865,8 @@ class VirtualSD:
             # self.current_file_index = (last_move_file_index + 1) % self.max_file_count
             self.notify_mcu_enable_power_loss(1, current_line)
             file_env = self.get_pl_print_file_env()
+            if file_env is None or not isinstance(file_env, dict):
+                file_env = {}
             file_env['env_flag'] = self.get_pl_env_flag()[0]
             self.save_environment_data(self.pl_print_file_env_path, file_env)
 
@@ -2037,7 +2063,8 @@ class GCodeStateTracker:
                        minval, maxval, above, below)
 
     def _get_gcode_speed(self):
-        return self.speed / self.speed_factor
+        speed_factor = self.speed_factor if self.speed_factor and self.speed_factor > 0. else (1. / 60.)
+        return self.speed / speed_factor
 
     def _parse_gcode_line(self, line):
         line = origline = line.strip()
@@ -2139,7 +2166,8 @@ class GCodeStateTracker:
         elif cmd == 'M221':
             new_extrude_factor = self.get_float(line, params, 'S', 100., above=0.) / 100.
             last_e_pos = self.last_position[3]
-            e_value = (last_e_pos - self.base_position[3]) / self.extrude_factor
+            extrude_factor = self.extrude_factor if self.extrude_factor and self.extrude_factor > 0. else 1.0
+            e_value = (last_e_pos - self.base_position[3]) / extrude_factor
             self.base_position[3] = last_e_pos - e_value * new_extrude_factor
             self.extrude_factor = new_extrude_factor
         elif cmd == 'M204':
@@ -2162,11 +2190,12 @@ class GCodeStateTracker:
             if min_cruise_ratio is None:
                 req_accel_to_decel = self.get_float(line, params, 'ACCEL_TO_DECEL',
                                                     None, above=0.)
-                if req_accel_to_decel is not None and max_accel is not None:
+                if req_accel_to_decel is not None and max_accel is not None and max_accel > 0.:
                     min_cruise_ratio = 1. - min(1., req_accel_to_decel / max_accel)
                 elif req_accel_to_decel is not None and max_accel is None:
-                    min_cruise_ratio = 1. - min(1., (req_accel_to_decel
-                                                    / self.max_accel))
+                    if self.max_accel and self.max_accel > 0.:
+                        min_cruise_ratio = 1. - min(1., (req_accel_to_decel
+                                                        / self.max_accel))
             # if max_velocity is not None:
             #     self.max_velocity = max_velocity
             if max_accel is not None:
@@ -2185,14 +2214,16 @@ class GCodeStateTracker:
                     try:
                         extruder_index = int(cmd[1:])
                         print_task_config_info = self.print_task_config.get_print_task_config()
-                        extruder_map_table = print_task_config_info["reprint_info"]["extruder_map_table"]
+                        reprint_info = print_task_config_info.get("reprint_info", {}) if print_task_config_info else {}
+                        extruder_map_table = reprint_info.get("extruder_map_table") if isinstance(reprint_info, dict) else None
                         if isinstance(extruder_map_table, list) and extruder_index < len(extruder_map_table):
                             mapped_value = extruder_map_table[extruder_index]
                             self.extruder_gcode_id = f"T{mapped_value}"
                         else:
-                            logging.exception("Invalid cmd: '%s'" % (cmd,))
+                            self.extruder_gcode_id = cmd
                     except Exception as e:
                         logging.exception("Invalid cmd: '%s'" % (cmd,))
+                        self.extruder_gcode_id = cmd
                 else:
                     self.extruder_gcode_id = cmd
             finally:
@@ -2233,32 +2264,33 @@ class GCodeStateTracker:
                 logging.exception("Unable to parse move '%s'" % (line,))
         elif cmd == 'EXCLUDE_OBJECT_START':
             try:
-                name = self.get(line, params, 'NAME').upper()
-                if not any(obj["name"] == name for obj in self.objects):
+                raw_name = self.get(line, params, 'NAME', None)
+                if not raw_name:
+                    raise self.printer.command_error(f"Error on '{line}': missing NAME")
+                name = raw_name.upper()
+                if not any(obj.get("name") == name for obj in self.objects):
                     self._add_object_definition({"name": name})
                 self.current_object = name
             except Exception as e:
                 logging.exception("Unable to parse '%s'" % (line,))
         elif cmd == 'EXCLUDE_OBJECT_END':
-            if self.current_object == None:
+            if self.current_object is None:
                 return
             self.current_object = None
         elif cmd == 'EXCLUDE_OBJECT':
             try:
                 reset = self.get(line, params, 'RESET', None)
                 current = self.get(line, params, 'CURRENT', None)
-                name = self.get(line, params, 'NAME').upper()
+                raw_name = self.get(line, params, 'NAME', None)
+                name = raw_name.upper() if raw_name is not None else None
                 if reset:
                     if name:
                         self._unexclude_object(name)
-
                     else:
                         self.excluded_objects = []
-
                 elif name:
-                    if name.upper() not in self.excluded_objects:
-                        self._exclude_object(name.upper())
-
+                    if name not in self.excluded_objects:
+                        self._exclude_object(name)
                 elif current:
                     if self.current_object:
                         self._exclude_object(self.current_object)
@@ -2272,7 +2304,8 @@ class GCodeStateTracker:
             self.extrude_factor = extrude_factor
 
         if speed_factor is not None:
-            self.speed = speed_factor * self.speed / self.speed_factor
+            old_speed_factor = self.speed_factor if self.speed_factor and self.speed_factor > 0. else (1. / 60.)
+            self.speed = speed_factor * self.speed / old_speed_factor
             self.speed_factor = speed_factor
 
         if speed_factor_bak is not None:

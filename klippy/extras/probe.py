@@ -128,17 +128,19 @@ class ProbeCommandHelper:
         fo_gcmd = gcode.create_gcode_command("", "", fo_params)
         # Probe bed sample_count times
         probe_session = self.probe.start_probe_session(fo_gcmd)
-        probe_num = 0
-        while probe_num < sample_count:
-            # Probe position
-            probe_session.run_probe(fo_gcmd)
-            probe_num += 1
-            # Retract
-            pos = toolhead.get_position()
-            liftpos = [None, None, pos[2] + params['sample_retract_dist']]
-            self._move(liftpos, params['lift_speed'])
-        positions = probe_session.pull_probed_results()
-        probe_session.end_probe_session()
+        try:
+            probe_num = 0
+            while probe_num < sample_count:
+                # Probe position
+                probe_session.run_probe(fo_gcmd)
+                probe_num += 1
+                # Retract
+                pos = toolhead.get_position()
+                liftpos = [None, None, pos[2] + params['sample_retract_dist']]
+                self._move(liftpos, params['lift_speed'])
+            positions = probe_session.pull_probed_results()
+        finally:
+            probe_session.end_probe_session()
         # Calculate maximum, minimum and average values
         max_value = max([p[2] for p in positions])
         min_value = min([p[2] for p in positions])
@@ -452,20 +454,22 @@ class ProbePointsHelper:
             raise gcmd.error("horizontal_move_z can't be less than"
                              " probe's z_offset")
         probe_session = probe.start_probe_session(gcmd)
-        probe_num = 0
-        while 1:
-            self._raise_tool(not probe_num)
-            if probe_num >= len(self.probe_points):
-                results = probe_session.pull_probed_results()
-                done = self._invoke_callback(results)
-                if done:
-                    break
-                # Caller wants a "retry" - restart probing
-                probe_num = 0
-            self._move_next(probe_num)
-            probe_session.run_probe(gcmd)
-            probe_num += 1
-        probe_session.end_probe_session()
+        try:
+            probe_num = 0
+            while 1:
+                self._raise_tool(not probe_num)
+                if probe_num >= len(self.probe_points):
+                    results = probe_session.pull_probed_results()
+                    done = self._invoke_callback(results)
+                    if done:
+                        break
+                    # Caller wants a "retry" - restart probing
+                    probe_num = 0
+                self._move_next(probe_num)
+                probe_session.run_probe(gcmd)
+                probe_num += 1
+        finally:
+            probe_session.end_probe_session()
     def _manual_probe_start(self):
         self._raise_tool(not self.manual_results)
         if len(self.manual_results) >= len(self.probe_points):
@@ -487,10 +491,12 @@ class ProbePointsHelper:
 # Helper to obtain a single probe measurement
 def run_single_probe(probe, gcmd):
     probe_session = probe.start_probe_session(gcmd)
-    probe_session.run_probe(gcmd)
-    pos = probe_session.pull_probed_results()[0]
-    probe_session.end_probe_session()
-    return pos
+    try:
+        probe_session.run_probe(gcmd)
+        pos = probe_session.pull_probed_results()[0]
+        return pos
+    finally:
+        probe_session.end_probe_session()
 
 
 ######################################################################

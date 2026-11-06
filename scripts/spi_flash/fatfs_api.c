@@ -139,7 +139,11 @@ struct ff_file* __visible
 fatfs_open(const char* path, uint8_t mode)
 {
     FRESULT res;
+    if (!path)
+        return NULL;
     struct ff_file* fhdl = malloc(sizeof(*fhdl));
+    if (!fhdl)
+        return NULL;
     memset(fhdl, 0, sizeof(*fhdl));
     res = f_open(&(fhdl->fobj), path, mode);
     if (res != FR_OK) {
@@ -153,6 +157,8 @@ uint8_t __visible
 fatfs_close(struct ff_file* fhdl)
 {
     FRESULT res;
+    if (!fhdl)
+        return FR_INVALID_OBJECT;
     res = f_close(&(fhdl->fobj));
     free(fhdl);
     return res;
@@ -163,6 +169,8 @@ fatfs_read(struct ff_file* fhdl, void* rbuf, uint16_t btr)
 {
     FRESULT res;
     UINT bytes_read;
+    if (!fhdl || !rbuf)
+        return -FR_INVALID_OBJECT;
     res = f_read(&(fhdl->fobj), rbuf, btr, &bytes_read);
     if (res != FR_OK) {
         return -res;
@@ -175,6 +183,8 @@ fatfs_write(struct ff_file* fhdl, const void* wbuf, uint16_t btw)
 {
     FRESULT res;
     UINT bytes_written;
+    if (!fhdl || !wbuf)
+        return -FR_INVALID_OBJECT;
     res = f_write(&(fhdl->fobj), wbuf, btw, &bytes_written);
     if (bytes_written < btw) {
         return -res;
@@ -187,6 +197,8 @@ uint8_t __visible
 fatfs_remove(const char* path)
 {
     FRESULT res;
+    if (!path)
+        return FR_INVALID_PARAMETER;
     res = f_unlink(path);
     return res;
 }
@@ -196,6 +208,8 @@ fatfs_get_fstats(struct ff_file_info* finfo, const char* path)
 {
     FRESULT res;
     FILINFO nfo;
+    if (!finfo || !path)
+        return FR_INVALID_PARAMETER;
     res = f_stat(path, &nfo);
     if (res == FR_OK)
         memcpy(finfo, &nfo, sizeof(nfo));
@@ -206,6 +220,8 @@ uint8_t __visible
 fatfs_get_disk_info(struct ff_disk_info* dinfo)
 {
     FRESULT res;
+    if (!dinfo)
+        return FR_INVALID_PARAMETER;
     res = f_getlabel("", dinfo->label, &(dinfo->serial_number));
     if (res != FR_OK)
         return res;
@@ -219,14 +235,17 @@ fatfs_list_dir(struct ff_file_info* flist, uint8_t max_size, char* path)
     FRESULT res;
     DIR dir;
     FILINFO nfo;
+    if (!flist || !path)
+        return FR_INVALID_PARAMETER;
     res = f_opendir(&dir, path);
     if (res == FR_OK) {
         for (uint8_t i=0; i < max_size; i++) {
             res = f_readdir(&dir, &nfo);
-            if (res != FR_OK ||nfo.fname[0] == 0)
+            if (res != FR_OK || nfo.fname[0] == 0)
                 break;
             memcpy(&(flist[i]), &nfo, sizeof(nfo));
         }
+        f_closedir(&dir);
     }
-    return FR_OK;
+    return res;
 }

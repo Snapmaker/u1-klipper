@@ -20,7 +20,10 @@ class PurifierFanTachometer:
     def get_status(self, eventtime=None):
         rpm = None
         if self._frequence is not None:
-            rpm = self._frequence.get_frequency()  * 30. / self._ppr
+            if self._ppr > 0:
+                rpm = self._frequence.get_frequency() * 30. / self._ppr
+            else:
+                rpm = 0.0
         return {'rpm': rpm}
 
 class Purifier:
@@ -30,7 +33,7 @@ class Purifier:
         self.reactor = self.printer.get_reactor()
 
         # read config
-        tach_ppr = config.getint('tachometer_ppr', 2)
+        tach_ppr = config.getint('tachometer_ppr', 2, minval=1)
         tach_poll_time = config.getfloat('tachometer_poll_interval', 0.001)
         extra_fan_tach_pin = config.get('extra_fan_tach_pin')
 

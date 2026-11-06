@@ -104,8 +104,27 @@ class HomingPreciseCorexy:
         y_backoff_dir = [1, -1][y_away_from_endstop_dir == False] * [-1, 1][y_stepper_dir_inverted]
         # self.gcode.respond_info("###########x_phase {}, y_phase {}###########".format(self.x_tmc_module.query_phase(), self.y_tmc_module.query_phase()))
         # Calculate the step to be moved for tmc phase alignment
-        x_backoff_step = (([1, -1][x_backoff_dir == 1]*self.x_tmc_module.query_phase()) % 1024) / (1024 / self.x_tmc_module.get_phase_offset()[1])
-        y_backoff_step = (([1, -1][y_backoff_dir == 1]*self.y_tmc_module.query_phase()) % 1024) / (1024 / self.y_tmc_module.get_phase_offset()[1])
+        x_phase_offset = self.x_tmc_module.get_phase_offset()
+        x_phases = x_phase_offset[1] if len(x_phase_offset) > 1 else 0
+        if x_phases <= 0:
+            raise self.printer.command_error(
+                "Invalid TMC phase configuration for stepper_x")
+        x_scale = 1024.0 / x_phases
+        if x_scale == 0:
+            raise self.printer.command_error(
+                "Invalid TMC phase scale for stepper_x")
+        x_backoff_step = (([1, -1][x_backoff_dir == 1]*self.x_tmc_module.query_phase()) % 1024) / x_scale
+
+        y_phase_offset = self.y_tmc_module.get_phase_offset()
+        y_phases = y_phase_offset[1] if len(y_phase_offset) > 1 else 0
+        if y_phases <= 0:
+            raise self.printer.command_error(
+                "Invalid TMC phase configuration for stepper_y")
+        y_scale = 1024.0 / y_phases
+        if y_scale == 0:
+            raise self.printer.command_error(
+                "Invalid TMC phase scale for stepper_y")
+        y_backoff_step = (([1, -1][y_backoff_dir == 1]*self.y_tmc_module.query_phase()) % 1024) / y_scale
         return x_backoff_step, y_backoff_step
 
     def diagonal_probe(self, endstops, movepos, sim_stall_set_endstops=None):
@@ -293,13 +312,13 @@ class HomingPreciseCorexy:
                     recv_steps, recv_dists, probe_success = self.perform_diagonal_probing(new_probe_start_x, new_probe_start_y)
                     if probe_success == True:
                         data['c_dist'][0], data['c_dist'][1], c_a_raw, c_b_raw = self.cal_diagonal_dist_selected(recv_steps, True)
-                        c_acc[0] += data['c_dist'][0]
-                        c_acc[1] += data['c_dist'][1]
                         self.gcode.respond_info("c_a_raw: {}, c_b_raw: {}".format(data['c_dist'][0], data['c_dist'][1]))
                     else:
                         error = '{"coded": "0003-0530-0000-0024", "msg":"%s", "action": "cancel"}' % ("Home origin calibration failed, Corexy precise homing failed")
                         raise self.printer.command_error(error)
 
+            c_acc[0] = sum(p['c_dist'][0] for p in points)
+            c_acc[1] = sum(p['c_dist'][1] for p in points)
             origin = [c_acc[0] / float(len(point_sequence)), c_acc[1] / float(len(point_sequence))]
             o_int = [int(round(origin[0])), int(round(origin[1]))]
             self.gcode.respond_info("origin: {}, o_int: {}".format(origin, o_int))

@@ -202,7 +202,9 @@ sdio_send_command(struct sdio_config sdio_config, uint8_t cmd,
             response_data[1] = (uint8_t) ((sdio->RESP1 >> 16) & 0xFF);
             response_data[2] = (uint8_t) ((sdio->RESP1 >> 8) & 0xFF);
             response_data[3] = (uint8_t) ((sdio->RESP1) & 0xFF);
-            *response_data_len = 4;
+            if (response_data_len != NULL) {
+                *response_data_len = 4;
+            }
         } else if (wait == SDIO_WAIT_LONG_RESPONSE) {
             // TODO Inverse?
             response_data[0] =  (uint8_t) ((sdio->RESP1 >> 24) & 0xFF);
@@ -221,7 +223,9 @@ sdio_send_command(struct sdio_config sdio_config, uint8_t cmd,
             response_data[13] = (uint8_t) ((sdio->RESP4 >> 16) & 0xFF);
             response_data[14] = (uint8_t) ((sdio->RESP4 >> 8) & 0xFF);
             response_data[15] = (uint8_t) ((sdio->RESP4) & 0xFF);
-            *response_data_len = 16;
+            if (response_data_len != NULL) {
+                *response_data_len = 16;
+            }
         }
     }
 
@@ -304,8 +308,13 @@ sdio_read_data(struct sdio_config sdio_config, uint8_t *data,
         return SDIO_NO_DATA_MEMORY;
     }
 
+    uint32_t count = SDIO_MAX_TIMEOUT * (SystemCoreClock / 8U / 1000U);
     while ((sdio->STA & (SDIO_STA_RXOVERR | SDIO_STA_DCRCFAIL |
         SDIO_STA_DTIMEOUT | SDIO_STA_DATAEND)) == 0) {
+        if (count-- == 0) {
+            sdio->ICR = SDIO_STATIC_FLAGS;
+            return SDIO_DATA_TIMEOUT;
+        }
         if ((sdio->STA & SDIO_STA_RXDAVL) != 0) {
             uint32_t tmp = sdio->FIFO;
             for (uint8_t i=0; (i<4) && (data_remaining>0); i++) {
@@ -331,7 +340,11 @@ sdio_read_data(struct sdio_config sdio_config, uint8_t *data,
     }
 
     // Empty FIFO and clear flags again
+    count = 10000;
     while (((sdio->STA & SDIO_STA_RXDAVL) != 0) && (data_remaining > 0)) {
+        if (count-- == 0) {
+            break;
+        }
         uint32_t tmp = sdio->FIFO;
         for (uint8_t i=0; (i<4) && (data_remaining>0); i++) {
             *buf = (uint8_t)(tmp & 0xFF);
@@ -358,8 +371,13 @@ sdio_write_data(struct sdio_config sdio_config, uint8_t *data,
         return SDIO_NO_DATA_MEMORY;
     }
 
+    uint32_t count = SDIO_MAX_TIMEOUT * (SystemCoreClock / 8U / 1000U);
     while ((sdio->STA & (SDIO_STA_TXUNDERR | SDIO_STA_DCRCFAIL |
         SDIO_STA_DTIMEOUT | SDIO_STA_DATAEND)) == 0) {
+        if (count-- == 0) {
+            sdio->ICR = SDIO_STATIC_FLAGS;
+            return SDIO_DATA_TIMEOUT;
+        }
         if ((sdio->STA & SDIO_STA_TXFIFOF) == 0) {
             uint32_t tmp = 0;
             for (uint8_t i=0; (i<4) && (data_remaining>0); i++) {
@@ -404,8 +422,11 @@ void
 sdio_set_speed(struct sdio_config sdio_config, uint32_t speed)
 {
     SDIO_TypeDef *sdio = sdio_config.sdio;
+    if (!speed)
+        shutdown("Invalid SDIO speed: 0");
 
-    uint8_t clkdiv = (SDIO_CLK_FREQ/speed)-2;
+    uint32_t div = SDIO_CLK_FREQ / speed;
+    uint8_t clkdiv = (div <= 2) ? 0 : ((div - 2 > 255) ? 255 : (uint8_t)(div - 2));
 
     uint32_t sdio_confreg = SDIO_CLOCK_EDGE_RISING | \
         SDIO_CLOCK_BYPASS_DISABLE | SDIO_CLOCK_POWER_SAVE_DISABLE | \

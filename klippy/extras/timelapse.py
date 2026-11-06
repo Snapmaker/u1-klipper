@@ -55,14 +55,18 @@ class TimeLapse:
             logging.error("[timelapse] cannot load necessary objects")
             return
 
-        self.mqtt_jsonrpc = JSONRPCClient(
-                            reactor=self.reactor,
-                            transport_type=JSONRPC_TRANSPORT_MQTT,
-                            mqtt_client=self.mqtt_client,
-                            request_topic=REQUEST_TOPIC,
-                            response_topic=RESPONSE_TOPIC,
-                            qos=0)
-        self.mqtt_jsonrpc.connect()
+        try:
+            self.mqtt_jsonrpc = JSONRPCClient(
+                                reactor=self.reactor,
+                                transport_type=JSONRPC_TRANSPORT_MQTT,
+                                mqtt_client=self.mqtt_client,
+                                request_topic=REQUEST_TOPIC,
+                                response_topic=RESPONSE_TOPIC,
+                                qos=0)
+            self.mqtt_jsonrpc.connect()
+        except Exception as e:
+            logging.error(f"[timelapse] failed to initialize jsonrpc: {e}")
+            self.mqtt_jsonrpc = None
 
     def _handle_start_print_job(self):
         self.timeslapse_ignore = False
@@ -77,7 +81,8 @@ class TimeLapse:
 
     cmd_TIMELAPSE_START_help = "Start timelapse recording"
     def cmd_TIMELAPSE_START(self, gcmd):
-        if self.mqtt_client is None or self.print_task_config is None:
+        if (self.mqtt_client is None or self.print_task_config is None
+                or self.mqtt_jsonrpc is None):
             raise gcmd.error("[timelapse] cannot start, klippy not ready!")
 
         if not self.print_task_config.print_task_config['time_lapse_camera']:
@@ -118,6 +123,8 @@ class TimeLapse:
 
         try:
             self.gcode.run_script_from_command("SET_LED LED=cavity_led WHITE=1\r\n")
+            if self.mqtt_jsonrpc is None:
+                raise ValueError("mqtt_jsonrpc not initialized")
             response_info = self.mqtt_jsonrpc.send_request_with_response(
                                         "camera.start_timelapse",
                                         params,
@@ -148,7 +155,7 @@ class TimeLapse:
     def cmd_TIMELAPSE_STOP(self, gcmd):
         force = gcmd.get_int('FORCE', 0)
 
-        if self.mqtt_client is None:
+        if self.mqtt_client is None or self.mqtt_jsonrpc is None:
             self.is_active = False
             gcmd.respond_info("!![timelapse] stop error, mqtt not ready!")
             return
@@ -158,6 +165,8 @@ class TimeLapse:
             return
 
         try:
+            if self.mqtt_jsonrpc is None:
+                raise ValueError("mqtt_jsonrpc not initialized")
             response_info = self.mqtt_jsonrpc.send_request_with_response(
                                         "camera.stop_timelapse",
                                         {},
@@ -186,7 +195,8 @@ class TimeLapse:
         filepath = "/tmp/tmp.jpg"
         timestamp = time.strftime("%Y%m%d_%H%M%S")
 
-        if self.mqtt_client is None or self.print_task_config is None:
+        if (self.mqtt_client is None or self.print_task_config is None
+                or self.mqtt_jsonrpc is None):
             logging.error("[timelapse] take error, klippy not ready!")
             return
 
@@ -218,7 +228,8 @@ class TimeLapse:
                 "filepath": filepath
             }
 
-            self.mqtt_jsonrpc.send_request("camera.take_a_photo", params)
+            if self.mqtt_jsonrpc is not None:
+                self.mqtt_jsonrpc.send_request("camera.take_a_photo", params)
 
         except Exception as e:
             logging.error(f"[timelapse] failed to take a picture: {str(e)}")

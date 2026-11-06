@@ -1160,14 +1160,21 @@ class PrinterExtruder:
             filament_parameters = self.printer.lookup_object('filament_parameters', None)
             if print_task_config is not None and filament_parameters is not None:
                 status = print_task_config.get_status()
-                is_allow = filament_parameters.is_allow_to_print(
-                        status['filament_vendor'][self.extruder_index],
-                        status['filament_type'][self.extruder_index],
-                        status['filament_sub_type'][self.extruder_index],
-                        self.nozzle_diameter,
-                        self.nozzle_volume_type)
-                if not is_allow:
-                    print_task_config.reset_filament_info(self.extruder_index)
+                vendors = status.get('filament_vendor', [])
+                types = status.get('filament_type', [])
+                sub_types = status.get('filament_sub_type', [])
+                idx = self.extruder_index
+                if (0 <= idx < len(vendors) and
+                        0 <= idx < len(types) and
+                        0 <= idx < len(sub_types)):
+                    is_allow = filament_parameters.is_allow_to_print(
+                            vendors[idx],
+                            types[idx],
+                            sub_types[idx],
+                            self.nozzle_diameter,
+                            self.nozzle_volume_type)
+                    if not is_allow:
+                        print_task_config.reset_filament_info(idx)
 
     def _set_nozzle_volume_type(self, volume_type, save=True):
         self.nozzle_volume_type = volume_type
@@ -1257,10 +1264,18 @@ class PrinterExtruder:
             return 220
 
         status = print_task_config.get_status()
+        vendors = status.get('filament_vendor', [])
+        types = status.get('filament_type', [])
+        sub_types = status.get('filament_sub_type', [])
+        if not (0 <= extruder_index < len(vendors) and
+                0 <= extruder_index < len(types) and
+                0 <= extruder_index < len(sub_types)):
+            return 220
+
         return filament_parameters.get_print_temp(
-                status['filament_vendor'][extruder_index],
-                status['filament_type'][extruder_index],
-                status['filament_sub_type'][extruder_index],
+                vendors[extruder_index],
+                types[extruder_index],
+                sub_types[extruder_index],
                 extruder_obj.nozzle_diameter,
                 extruder_obj.nozzle_volume_type)
 
@@ -1454,19 +1469,20 @@ class PrinterExtruder:
                         if result:
                             error_info, activated, unknown, grip_states, activated_code, unknown_code = result
                             error_msg = "Extruder %s switch is not allowed, %s" % (self.name, error_info)
+                            message = f"Extruder {self.name} switch is not allowed, {error_msg}"
                             if "multi-act" in error_info:
-                                if activated_code + 6 < 18:
-                                    message = '{"coded": "0002-0523-%4d-%4d", "oneshot": %d, "msg":"%s", "action": "pause"}' % (self.extruder_num, activated_code + 6, 0, error_msg)
+                                code = activated_code + 6 if activated_code + 6 < 18 else 17
+                                message = '{"coded": "0002-0523-%4d-%4d", "oneshot": %d, "msg":"%s", "action": "pause"}' % (self.extruder_num, code, 0, error_msg)
                             else:
                                 message = '{"coded": "0002-0523-%4d-0018", "oneshot": %d, "msg":"%s", "action": "pause"}' % (self.extruder_num, 0, error_msg)
-                                if self.grab_hall_sensor_type:
+                                if self.grab_hall_sensor_type and unknown:
                                     first_unknown_index = None
                                     for i, idx in enumerate(unknown):
-                                        if grip_states[idx] != 'FFT':
+                                        if 0 <= idx < len(grip_states) and grip_states[idx] != 'FFT':
                                             first_unknown_index = idx
                                             break
 
-                                    if first_unknown_index is not None:
+                                    if first_unknown_index is not None and 0 <= first_unknown_index < len(grip_states):
                                         grip_state = grip_states[first_unknown_index]
                                         if grip_state == 'FFF' or grip_state == 'FFT':
                                             info = "Extruder %s is not allowed to switch, detected that extruder%d is detached. %s" % (self.name, first_unknown_index, error_info)
@@ -1726,20 +1742,21 @@ class PrinterExtruder:
                                                 code = 23 + activated_code
                                         else:
                                             code = 35
-                                            if self.grab_hall_sensor_type:
-                                                first_unknow_state = grip_states[unknown[0]]
-                                                if first_unknow_state == 'FFT':
-                                                    code = 45
-                                                    extruder_num = unknown[0]
-                                                    error_msg = f'detected that extruder{unknown[0]} pogopin not connected. {error_msg}'
-                                                elif first_unknow_state == 'FFF':
-                                                    code = 46
-                                                    extruder_num = unknown[0]
-                                                    error_msg = f'detected that extruder{unknown[0]} is detached. {error_msg}'
-                                                elif first_unknow_state == 'TTT' or first_unknow_state == 'TTF':
-                                                    code = 47
-                                                    extruder_num = unknown[0]
-                                                    error_msg = f'detected conflicting status for extruder{unknown[0]}: both parked and picked states. {error_msg}'
+                                            if self.grab_hall_sensor_type and unknown:
+                                                if 0 <= unknown[0] < len(grip_states):
+                                                    first_unknow_state = grip_states[unknown[0]]
+                                                    if first_unknow_state == 'FFT':
+                                                        code = 45
+                                                        extruder_num = unknown[0]
+                                                        error_msg = f'detected that extruder{unknown[0]} pogopin not connected. {error_msg}'
+                                                    elif first_unknow_state == 'FFF':
+                                                        code = 46
+                                                        extruder_num = unknown[0]
+                                                        error_msg = f'detected that extruder{unknown[0]} is detached. {error_msg}'
+                                                    elif first_unknow_state == 'TTT' or first_unknow_state == 'TTF':
+                                                        code = 47
+                                                        extruder_num = unknown[0]
+                                                        error_msg = f'detected conflicting status for extruder{unknown[0]}: both parked and picked states. {error_msg}'
                                         msg = f"Extruder {self.name} pickup failed, {error_msg}"
                                 message = '{"coded": "0002-0523-%4d-%4d", "oneshot": %d, "msg":"%s", "action": "pause"}' % (extruder_num, code, 0, msg)
                                 if retry_extruder_id is not None:
@@ -1769,10 +1786,12 @@ class PrinterExtruder:
 
                 if extruder_list[i].vref_sw is not None:
                     if extruder_list[i].name == self.name:
-                        toolhead.register_lookahead_callback(lambda print_time: extruder_list[i].vref_sw._set_pin(print_time, 1))
+                        toolhead.register_lookahead_callback(
+                            lambda print_time, ext=extruder_list[i]: ext.vref_sw._set_pin(print_time, 1))
                         # extruder_list[i].vref_sw._set_pin(toolhead.get_last_move_time(), 1)
                     else:
-                        toolhead.register_lookahead_callback(lambda print_time: extruder_list[i].vref_sw._set_pin(print_time, 0))
+                        toolhead.register_lookahead_callback(
+                            lambda print_time, ext=extruder_list[i]: ext.vref_sw._set_pin(print_time, 0))
                         # extruder_list[i].vref_sw._set_pin(toolhead.get_last_move_time(), 0)
 
             if restore_state == True:
@@ -1829,6 +1848,11 @@ class PrinterExtruder:
 
         if not self.check_xy_homing():
             raise gcmd.error("Activate extruder must home XY first")
+
+        if not hasattr(current_extruder, 'xy_park_position') or current_extruder.xy_park_position is None:
+            raise gcmd.error("Current extruder park position is not configured")
+        if not hasattr(current_extruder, 'y_idle_position') or current_extruder.y_idle_position is None:
+            raise gcmd.error("Current extruder idle position is not configured")
 
         x_idle_position = current_extruder.xy_park_position[0] + [1, -1][not current_extruder.grab_dir] * \
                 (current_extruder.horizontal_move_x - current_extruder.retract_x_dist)
@@ -2054,18 +2078,26 @@ class PrinterExtruder:
         move_calibration_y = 320
 
         force_move = not not gcmd.get_int('FORCE_MOVE', 0)
+        base_calibration_y = 320
         macro = self.printer.lookup_object('gcode_macro _MOVE_TO_{}_PARK_CALIBRATION_POINT'.format(self.name.upper()), None)
         if macro is not None:
             move_calibration_x = macro.variables.get('x_pos', move_calibration_x)
-            move_calibration_y = macro.variables.get('y_pos', move_calibration_y)
+            base_calibration_y = macro.variables.get('y_pos', base_calibration_y)
 
         move_calibration_x = gcmd.get_float('X', move_calibration_x)
-        move_calibration_y = gcmd.get_float('Y', move_calibration_y)
+        move_calibration_y = gcmd.get_float('Y', base_calibration_y)
 
         x_diff = abs(move_calibration_x - self.xy_park_position[0])
-        if (x_diff > MAX_ALLOWED_DIFFERENCE and not force_move):
-            msg = (f"Move to park calibration position X differs too much from current position. Exceeded: X: {x_diff:.3f}mm. "
-                  f"Max allowed: {MAX_ALLOWED_DIFFERENCE:.3f}mm.")
+        y_diff = abs(move_calibration_y - base_calibration_y)
+        if ((x_diff > MAX_ALLOWED_DIFFERENCE or y_diff > MAX_ALLOWED_DIFFERENCE) and not force_move):
+            exceeded = []
+            if x_diff > MAX_ALLOWED_DIFFERENCE:
+                exceeded.append(f"X: {x_diff:.3f}mm")
+            if y_diff > MAX_ALLOWED_DIFFERENCE:
+                exceeded.append(f"Y: {y_diff:.3f}mm")
+            msg = (f"Move to park calibration position differs too much from current position. "
+                   f"Exceeded: {', '.join(exceeded)}. "
+                   f"Max allowed: {MAX_ALLOWED_DIFFERENCE:.3f}mm.")
             err_msg = '{"coded": "0003-0530-0000-0023", "msg":"%s"}' % (msg)
             raise gcmd.error(err_msg)
 
@@ -2105,9 +2137,16 @@ class PrinterExtruder:
         xy_park_position[1] = verify_y
 
         x_diff = abs(verify_x - self.xy_park_position[0])
-        if (x_diff > MAX_ALLOWED_DIFFERENCE and not force_move):
-            msg = (f"Verify park position differs too much from current position. Exceeded: X: {x_diff:.3f}mm. "
-                  f"Max allowed: {MAX_ALLOWED_DIFFERENCE:.3f}mm.")
+        y_diff = abs(verify_y - self.xy_park_position[1])
+        if ((x_diff > MAX_ALLOWED_DIFFERENCE or y_diff > MAX_ALLOWED_DIFFERENCE) and not force_move):
+            exceeded = []
+            if x_diff > MAX_ALLOWED_DIFFERENCE:
+                exceeded.append(f"X: {x_diff:.3f}mm")
+            if y_diff > MAX_ALLOWED_DIFFERENCE:
+                exceeded.append(f"Y: {y_diff:.3f}mm")
+            msg = (f"Verify park position differs too much from current position. "
+                   f"Exceeded axes: {', '.join(exceeded)}. "
+                   f"Max allowed: {MAX_ALLOWED_DIFFERENCE:.3f}mm.")
             err_msg = '{"coded": "0003-0530-0000-0023", "msg":"%s"}' % (msg)
             raise gcmd.error(err_msg)
 

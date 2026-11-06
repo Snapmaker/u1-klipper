@@ -1,0 +1,7 @@
+# Test case for BUG-BUF-10: Out-of-bounds IndexError in extruder.py
+CONFIG bug_buf10_extruder.cfg
+DICTIONARY simulator.dict
+
+# Attempt nozzle diameter change and filament temp queries
+SET_NOZZLE_DIAMETER EXTRUDER=extruder DIAMETER=0.2
+INNER_HEAT_TO_LOADED_FILAMENT_TEMP T=0
