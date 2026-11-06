@@ -60,8 +60,19 @@ If `abs(slope) < 1e-12`, dividing `-intercept` by `slope` results in an uncaught
                          measure_success_k = filaments_max_flow_k
 ```
 
+## Additional Components / Affected Files (Group B Zero-Division Fixes)
+- **File:** `klippy/extras/power_loss_check.py`
+  - **Lines:** 189-195
+  - **Fix:** Guard `total_ticks = self.high_level_tick + self.low_level_tick; if total_ticks > 0: self.duty_percent = self.high_level_tick / total_ticks else: self.duty_percent = 0.0`.
+- **File:** `klippy/extras/purifier_factory.py`
+  - **Lines:** 20-30
+  - **Fix:** Guard `rpm = self._frequence.get_frequency() * 30. / self._ppr` if `self._ppr > 0` else `0.0`, and add `minval=1` to `tachometer_ppr` config parser.
+- **File:** `klippy/extras/defect_detection.py`
+  - **Lines:** 78, 808
+  - **Fix:** Added `above=0.` to `bed_detect_probe_distance` config and guarded division `int(start_pos[2] / probe_dist)` where `probe_dist = max(0.001, self.bed_detect_probe_distance)`.
+
 ## Regression & Safety Verification
 - Test case `test/klippy/bug_div07_flow_calibrator.test` executed with virtual simulator configuration `bug_div07_flow_calibrator.cfg`.
-- Output: `All 1 test cases passed`.
+- Python unit test `test/test_bug_div07_power_loss.py` executed: 3/3 tests pass (power_loss_check, purifier_factory, defect_detection).
 - Verified that zero slope returns `None` and triggers a clean `gcmd.error("flow_calibrate: slope near zero in linear fitting")` rather than an unhandled `ZeroDivisionError`.
 

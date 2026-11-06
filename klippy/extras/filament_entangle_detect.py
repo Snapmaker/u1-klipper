@@ -145,10 +145,12 @@ class FilamentEntangleDetect:
                 return False
 
             feed_module_status = self.filament_feed_module.get_status()
-            if self.extruder_index == 0:
-                feed_module_status = feed_module_status[self.extruder_name + "0"]
-            else:
-                feed_module_status = feed_module_status[self.extruder_name]
+            key = f"extruder{self.extruder_index}"
+            if key not in feed_module_status:
+                key = self.extruder_name
+            if key not in feed_module_status:
+                return False
+            feed_module_status = feed_module_status[key]
             if feed_module_status['module_exist'] == False or \
                     feed_module_status['disable_auto'] == True or \
                     feed_module_status['filament_detected'] == False:

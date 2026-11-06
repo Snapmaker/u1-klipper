@@ -166,21 +166,21 @@ error_status flash_write(uint32_t write_addr, uint16_t *p_buffer, uint16_t num_w
             if((status == FLASH_PROGRAM_ERROR) || (status == FLASH_EPP_ERROR))
                 flash_flag_clear(FLASH_PRGMERR_FLAG | FLASH_EPPERR_FLAG);
             else if(status == FLASH_OPERATE_TIMEOUT)
-                return ERROR;
+                goto err_exit;
             status = flash_sector_erase(sector_position * FLASH_SECTOR_SIZE + FLASH_BASE);
             if(status != FLASH_OPERATE_DONE)
-                return ERROR;
+                goto err_exit;
             for(i = 0; i < sector_remain; i++)
             {
                 flash_buf[i + sector_offset] = p_buffer[i];
             }
             if(flash_write_nocheck(sector_position * FLASH_SECTOR_SIZE + FLASH_BASE, flash_buf, FLASH_SECTOR_SIZE / 2) != SUCCESS)
-                return ERROR;
+                goto err_exit;
         }
         else
         {
             if(flash_write_nocheck(write_addr, p_buffer, sector_remain) != SUCCESS)
-                return ERROR;
+                goto err_exit;
         }
 
         if(num_write == sector_remain)
@@ -200,6 +200,10 @@ error_status flash_write(uint32_t write_addr, uint16_t *p_buffer, uint16_t num_w
     }
     flash_lock();
     return SUCCESS;
+
+err_exit:
+    flash_lock();
+    return ERROR;
   }
 
 void flash_sector_erase_ex(uint32_t sector_address) {
@@ -488,9 +492,12 @@ power_loss_check_init(void)
     tmr_interrupt_enable(TMR4, TMR_OVF_INT | TMR_C2_INT, FALSE);
     TMR4->ists &= 0;
     /* tmr4 counter mode configuration */
-    tmr_base_init(TMR4, 0xFFFF, TRM_PR_DIV_VALUE);
-
-    tmr_base_init(TMR4, (uint16_t)(TRM_OVER_FREQ*plc->power_loss_trigger_time - 1), TRM_PR_DIV_VALUE);
+    double calc_ticks = (double)TRM_OVER_FREQ * plc->power_loss_trigger_time - 1.0;
+    if (calc_ticks < 0.0 || calc_ticks > 65535.0) {
+        shutdown("Invalid power loss trigger time");
+    }
+    uint16_t pr_val = (uint16_t)calc_ticks;
+    tmr_base_init(TMR4, pr_val, TRM_PR_DIV_VALUE);
     tmr_counter_value_set(TMR4, 0);
     tmr_cnt_dir_set(TMR4, TMR_COUNT_UP);
 
@@ -514,7 +521,9 @@ power_loss_check_init(void)
 void
 command_config_power_loss_check_dev(uint32_t *args)
 {
-    if (plc) {
+    uint8_t existing_oid;
+    struct power_loss_check_dev *existing_dev;
+    foreach_oid(existing_oid, existing_dev, command_config_power_loss_check_dev) {
         output("power_loss_check_dev: Already configured");
         return;
     }
@@ -674,12 +683,19 @@ power_loss_check_shutdown(void)
     uint8_t oid;
     struct power_loss_check_dev *p;
     foreach_oid(oid, p, command_config_power_loss_check_dev) {
-        if (!power_loss_saved && plc->print_act) {
+        sched_del_timer(&p->timer);
+        if (!power_loss_saved && p->print_act) {
             power_loss_saved = 1;
             power_loss_rotate_sector();
             output("Power loss info saved during shutdown");
         }
     }
+#if CONFIG_MACH_AT32F4x
+    tmr_counter_enable(TMR4, FALSE);
+    tmr_interrupt_enable(TMR4, TMR_OVF_INT | TMR_C2_INT, FALSE);
+    NVIC_DisableIRQ(TMR4_GLOBAL_IRQn);
+#endif
+    plc = NULL;
 }
 DECL_SHUTDOWN(power_loss_check_shutdown);
 #endif

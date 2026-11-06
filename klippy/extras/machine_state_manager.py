@@ -1,5 +1,30 @@
 import logging, time
+import greenlet
 from enum import Enum, IntEnum, unique
+
+class ReentrantReactorMutex:
+    def __init__(self, mutex):
+        self._mutex = mutex
+        self._owner = None
+        self._count = 0
+
+    def __enter__(self):
+        current = greenlet.getcurrent()
+        if self._owner is current:
+            self._count += 1
+            return self
+        self._mutex.__enter__()
+        self._owner = current
+        self._count = 1
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._owner is not greenlet.getcurrent():
+            return
+        self._count -= 1
+        if self._count == 0:
+            self._owner = None
+            self._mutex.__exit__(exc_type, exc_val, exc_tb)
 
 class MachineStateManagerErr(Exception):
     """Machine state manager error base class"""
@@ -125,7 +150,7 @@ class MachineStateManager:
         self.printer = config.get_printer()
         self.pre_hooks = []
         self.post_hooks = []
-        self.lock = self.printer.get_reactor().mutex()
+        self.lock = ReentrantReactorMutex(self.printer.get_reactor().mutex())
         self.state_history = []
         self.max_history = 10
         all_states = list(MachineMainState)
@@ -271,7 +296,7 @@ class MachineStateManager:
                         raise MachineStateManagerErr(
                             f"Invalid state transition from {old_state} to {new_state}")
 
-                    for hook in self.pre_hooks:
+                    for hook in list(self.pre_hooks):
                         if not hook(old_state, new_state):
                             raise MachineStateManagerErr(f"Pre-hook {hook.__name__} returned False")
                 except Exception as e:
@@ -289,7 +314,7 @@ class MachineStateManager:
             # Only run post hooks if state actually changed
             if old_state != new_state:
                 try:
-                    for hook in self.post_hooks:
+                    for hook in list(self.post_hooks):
                         hook(old_state, new_state)
                 except Exception as e:
                     logging.exception("Post-hook execution failed")

@@ -65,12 +65,16 @@ static void
 adc_calibrate(ADC_Module *adc)
 {
     adc->CTRL2 = CTRL2_AD_ON_SET;
-    while (!(adc->CTRL3 & ADC_FLAG_RDY))
+    uint32_t timeout = 100000;
+    while (!(adc->CTRL3 & ADC_FLAG_RDY) && --timeout)
         ;
+    if (!timeout)
+        return;
     adc->CTRL3 &= (~ADC_CTRL3_BPCAL_MSK);
     udelay(10);
     adc->CTRL2 = CTRL2_AD_ON_SET | CTRL2_CAL_SET;
-    while (adc->CTRL2 & CTRL2_CAL_SET)
+    timeout = 100000;
+    while ((adc->CTRL2 & CTRL2_CAL_SET) && --timeout)
         ;
 }
 

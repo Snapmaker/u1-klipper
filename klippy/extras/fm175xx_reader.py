@@ -214,24 +214,38 @@ class FM175XXReader:
         self.__spi = spidev.SpiDev()
 
         # Pins
-        chip = gpiod.Chip('gpiochip1')
-        self.__soc_rst_pin = chip.get_line(25)
-        self.__soc_rst_pin.request(consumer='soc_rst_pin', type=gpiod.LINE_REQ_DIR_OUT, default_val=0)
-        self.__extra_rst_pin = chip.get_line(28)
-        self.__extra_rst_pin.request(consumer='extra_rst_pin', type=gpiod.LINE_REQ_DIR_OUT, default_val=0)
-        self.__rf_1_pin = chip.get_line(27)
-        self.__rf_1_pin.request(consumer='rf_1_pin', type=gpiod.LINE_REQ_DIR_OUT, default_val=0)
-        self.__rf_2_pin = chip.get_line(24)
-        self.__rf_2_pin.request(consumer='rf_2_pin', type=gpiod.LINE_REQ_DIR_OUT, default_val=0)
+        self.__gpio_chip = None
+        self.__soc_rst_pin = None
+        self.__extra_rst_pin = None
+        self.__rf_1_pin = None
+        self.__rf_2_pin = None
+        try:
+            self.__gpio_chip = gpiod.Chip('gpiochip1')
+            self.__soc_rst_pin = self.__gpio_chip.get_line(25)
+            self.__soc_rst_pin.request(consumer='soc_rst_pin',
+                                       type=gpiod.LINE_REQ_DIR_OUT, default_val=0)
+            self.__extra_rst_pin = self.__gpio_chip.get_line(28)
+            self.__extra_rst_pin.request(consumer='extra_rst_pin',
+                                         type=gpiod.LINE_REQ_DIR_OUT, default_val=0)
+            self.__rf_1_pin = self.__gpio_chip.get_line(27)
+            self.__rf_1_pin.request(consumer='rf_1_pin',
+                                    type=gpiod.LINE_REQ_DIR_OUT, default_val=0)
+            self.__rf_2_pin = self.__gpio_chip.get_line(24)
+            self.__rf_2_pin.request(consumer='rf_2_pin',
+                                    type=gpiod.LINE_REQ_DIR_OUT, default_val=0)
+        except Exception:
+            logging.exception("Failed to initialize GPIO lines for FM175XX")
 
         self.__rst_pin = None
 
+        self.__lock = threading.Lock()
         self.__card_info_read_flag = 0
         self.__card_info_clear_flag = 0
         self._first_scan_fail_fast = False
         self.__stop_event = threading.Event()
         self.__card_info_deal_cb = None
         self.__picc_a = Fm175xxPiccMetaData()
+        self.__bg_thread = None
 
         # self test
         self.__self_test_stage = FM175XX_SELF_TEST_STAGE_STOP
@@ -246,29 +260,29 @@ class FM175XXReader:
 
     def __ready(self):
         # Threading
-        background_thread = threading.Thread(target=self.__bg_thread)
-        background_thread.start()
+        self.__bg_thread = threading.Thread(target=self.__bg_thread)
+        self.__bg_thread.start()
 
     def __shutdown(self, eventtime=None):
         self.__stop_event.set()
-        try:
-            self.__soc_rst_pin.release()
-        except Exception:
-            pass
-        try:
-            self.__extra_rst_pin.release()
-        except Exception:
-            pass
-        try:
-            self.__rf_1_pin.release()
-        except Exception:
-            pass
-        try:
-            self.__rf_2_pin.release()
-        except Exception:
-            pass
+        if self.__bg_thread is not None and self.__bg_thread.is_alive():
+            self.__bg_thread.join(timeout=2.0)
+            self.__bg_thread = None
+        for pin in (self.__soc_rst_pin, self.__extra_rst_pin,
+                    self.__rf_1_pin, self.__rf_2_pin):
+            if pin is not None:
+                try:
+                    pin.release()
+                except Exception:
+                    pass
         try:
             self.__spi.close()
+        except Exception:
+            pass
+        try:
+            if self.__gpio_chip is not None:
+                self.__gpio_chip.close()
+                self.__gpio_chip = None
         except Exception:
             pass
 
@@ -287,9 +301,10 @@ class FM175XXReader:
 
     # hardware reset
     def __hard_reset(self):
-        self.__rst_pin.set_value(0)
-        time.sleep(0.100)
-        self.__rst_pin.set_value(1)
+        if self.__rst_pin is not None:
+            self.__rst_pin.set_value(0)
+            time.sleep(0.100)
+            self.__rst_pin.set_value(1)
         time.sleep(0.200)
 
     def __select_channel(self, channel):
@@ -794,7 +809,8 @@ class FM175XXReader:
         result = self.__command_exe(cmd)
         ret = result.err_code
 
-        if ((result.err_code != FM175XX_OK) or (result.out_param.bits_recved != 4) or (result.out_param.recv_buff[0] & 0x0F != 0x0A)):
+        if ((result.err_code != FM175XX_OK) or (result.out_param.bits_recved != 4) or
+                not result.out_param.recv_buff or (result.out_param.recv_buff[0] & 0x0F != 0x0A)):
             if (result.err_code == FM175XX_OK):
                 ret = FM175XX_CARD_COMM_ERR
         else:
@@ -806,7 +822,8 @@ class FM175XXReader:
             result = self.__command_exe(cmd)
             ret = result.err_code
 
-            if ((result.out_param.bits_recved != 4) or (result.out_param.recv_buff[0] & 0x0F != 0x0A)):
+            if ((result.out_param.bits_recved != 4) or not result.out_param.recv_buff or
+                    (result.out_param.recv_buff[0] & 0x0F != 0x0A)):
                 ret = FM175XX_CARD_COMM_ERR
 
         return ret
@@ -852,6 +869,14 @@ class FM175XXReader:
         ret.out_param = card_data_tmp
         return ret
 
+    def _dispatch_card_info_cb(self, ch, op, result, card_type, card_data):
+        with self.__lock:
+            cb = self.__card_info_deal_cb
+        if cb is not None:
+            self.__reactor.register_async_callback(
+                lambda et, c=ch, o=op, r=result, t=card_type, d=card_data:
+                cb(c, o, r, t, d))
+
     def __bg_thread(self):
         if self.__stop_event.wait(0.5):
             return
@@ -876,8 +901,9 @@ class FM175XXReader:
             retry_times_2 = 8
             retry_times_3 = 6
             if (self.__self_test_stage == FM175XX_SELF_TEST_STAGE_READY):
-                self.__card_info_read_flag = (1 << self.__self_test_channel)
-                self.__card_info_clear_flag = 0
+                with self.__lock:
+                    self.__card_info_read_flag = (1 << self.__self_test_channel)
+                    self.__card_info_clear_flag = 0
                 retry_times_1 = self.__self_test_times
                 retry_times_2 = 1
                 retry_times_3 = 1
@@ -889,10 +915,14 @@ class FM175XXReader:
             for ch in range(FM175XX_CHANNEL_NUMS):
                 if self.__stop_event.is_set():
                     break
-                if (self.__card_info_read_flag & (1 << ch)) == 0:
-                    if (self.__card_info_clear_flag & (1 << ch)) != 0:
-                        if (self.__card_info_deal_cb != None):
-                            self.__card_info_deal_cb(ch, FM175XX_CARD_INFO_CLEAR, FM175XX_OK, None, None)
+                with self.__lock:
+                    read_active = (self.__card_info_read_flag & (1 << ch)) != 0
+                    clear_active = (self.__card_info_clear_flag & (1 << ch)) != 0
+                if not read_active:
+                    if clear_active:
+                        self._dispatch_card_info_cb(
+                            ch, FM175XX_CARD_INFO_CLEAR, FM175XX_OK, None, None)
+                        with self.__lock:
                             self.__card_info_clear_flag &= ~(1 << ch) & 0xFFFFFFFF
                     continue
 
@@ -967,11 +997,13 @@ class FM175XXReader:
                                 card_op_result = FM175XX_OK
 
                                 if (self.__self_test_stage != FM175XX_SELF_TEST_STAGE_DOING):
-                                    self.__card_info_read_flag &= ~(1 << ch) & 0xFFFFFFFF
+                                    with self.__lock:
+                                        self.__card_info_read_flag &= ~(1 << ch) & 0xFFFFFFFF
                                 else:
                                     self.__self_test_success_cnt += 1
-                                    if (self.__card_info_deal_cb != None):
-                                        self.__card_info_deal_cb(ch, card_op, card_op_result, card_type, card_data)
+                                    self._dispatch_card_info_cb(
+                                        ch, card_op, card_op_result,
+                                        card_type, card_data)
                         break
 
                     # halt a card
@@ -983,7 +1015,9 @@ class FM175XXReader:
                     if no_card:
                         break
 
-                    if (self.__card_info_read_flag & (1 << ch)) == 0:
+                    with self.__lock:
+                        still_active = (self.__card_info_read_flag & (1 << ch)) != 0
+                    if not still_active:
                         break
                     else:
                         if self.__stop_event.wait(0.02):
@@ -992,10 +1026,12 @@ class FM175XXReader:
                 if (self.__self_test_stage == FM175XX_SELF_TEST_STAGE_DOING):
                     self.__self_test_stage = FM175XX_SELF_TEST_STAGE_STOP
                 else:
-                    if (self.__card_info_deal_cb != None):
-                        self.__card_info_deal_cb(ch, card_op, card_op_result, card_type, card_data)
+                    self._dispatch_card_info_cb(
+                        ch, card_op, card_op_result,
+                        card_type, card_data)
 
-                self.__card_info_read_flag &= ~(1 << ch) & 0xFFFFFFFF
+                with self.__lock:
+                    self.__card_info_read_flag &= ~(1 << ch) & 0xFFFFFFFF
 
             if first_scan:
                 self._first_scan_fail_fast = False
@@ -1035,22 +1071,31 @@ class FM175XXReader:
     def register_cb_2_card_info_deal(self, cb) -> None:
         try:
             if callable(cb):
-                self.__card_info_deal_cb = cb
+                with self.__lock:
+                    self.__card_info_deal_cb = cb
             else:
                 raise TypeError()
         except Exception as e:
             logging.error("Param[cb] is not a callable function")
 
     def request_read_card_info(self, channel):
-        self.__card_info_clear_flag &= ~(1 << channel) & 0xFFFFFFFF
-        self.__card_info_read_flag |= (1 << channel)
+        if (channel < 0 or channel >= FM175XX_CHANNEL_NUMS):
+            logging.error("invalid channel[%d]", channel)
+            return
+        with self.__lock:
+            self.__card_info_clear_flag &= ~(1 << channel) & 0xFFFFFFFF
+            self.__card_info_read_flag |= (1 << channel)
 
     def request_clear_card_info(self, channel):
-        self.__card_info_read_flag &= ~(1 << channel) & 0xFFFFFFFF
-        self.__card_info_clear_flag |= (1 << channel)
+        if (channel < 0 or channel >= FM175XX_CHANNEL_NUMS):
+            logging.error("invalid channel[%d]", channel)
+            return
+        with self.__lock:
+            self.__card_info_read_flag &= ~(1 << channel) & 0xFFFFFFFF
+            self.__card_info_clear_flag |= (1 << channel)
 
     def self_test(self, channel, times):
-        if (channel < 0 or channel > FM175XX_CHANNEL_NUMS):
+        if (channel < 0 or channel >= FM175XX_CHANNEL_NUMS):
             logging.error("invalid channel[%d]", channel)
             return
 

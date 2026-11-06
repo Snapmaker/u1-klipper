@@ -28,6 +28,7 @@ class FrequencyQueryHelper:
         self.frequency = []
         self.print_time = []
         self.msgs = []
+        self.active_procs = []
     def finish_measurements(self):
         logging.info("FrequencyQueryHelper: finish frequency measurements")
         toolhead = self.printer.lookup_object('toolhead')
@@ -80,22 +81,27 @@ class FrequencyQueryHelper:
         del self.msgs[:]
         return self.print_time, self.frequency
     def write_to_file(self, filename):
-        def write_impl():
+        self.active_procs = [p for p in self.active_procs if p.is_alive()]
+        print_time, frequency = self.get_samples()
+        def write_impl(target_filename, ptime, freq_data):
             try:
                 # Try to re-nice writing process
                 os.nice(20)
             except:
                 pass
-            f = open(filename, 'w+')
-            f.write("time,frequency\n")
-            print_time, frequency = self.get_samples()
-            for t, freq in zip(print_time, frequency):
-                f.write("%.4f,%d\n" % (
-                    t, freq))
-            f.close()
-        write_proc = multiprocessing.Process(target=write_impl)
+            try:
+                with open(target_filename, 'w+') as f:
+                    f.write("time,frequency\n")
+                    for t, freq in zip(ptime, freq_data):
+                        f.write("%.4f,%d\n" % (t, freq))
+            except Exception as err:
+                logging.exception("Failed to write frequency data to %s: %s",
+                                  target_filename, err)
+        write_proc = multiprocessing.Process(
+            target=write_impl, args=(str(filename), print_time, frequency))
         write_proc.daemon = True
         write_proc.start()
+        self.active_procs.append(write_proc)
 
 # Helper class for G-Code commands
 class FrequencyCommandHelper:
@@ -144,7 +150,7 @@ class FrequencyCommandHelper:
             gcmd.respond_info("Writing raw frequency data to %s file"
                             % (str(filename),))
         except Exception as e:
-            gcmd.error(e)
+            raise gcmd.error(str(e))
     cmd_FREQUENCY_QUERY_help = "Query current frequency of inductance coil"
     def cmd_FREQUENCY_QUERY(self, gcmd):
         toolhead = self.printer.lookup_object('toolhead')
@@ -183,7 +189,10 @@ class InductanceCoil:
 
         # setup bulk sensor helper, Process messages in batches
         FrequencyCommandHelper(config, self)
-        self._data_rate = config.getint('date_rate', 1000)
+        data_rate = config.getint('data_rate', None, minval=1)
+        if data_rate is None:
+            data_rate = config.getint('date_rate', 1000, minval=1)
+        self._data_rate = data_rate
         chip_smooth = self._data_rate * BATCH_UPDATES * 2
         self.ffreader = bulk_sensor.FixedFreqReader(mcu, chip_smooth, "<I")
         self.batch_bulk = bulk_sensor.BatchBulkHelper(
@@ -272,7 +281,10 @@ class InductanceCoil:
 
     def _start_measurements(self):
         # Start bulk reading
-        rest_ticks = self._mcu.seconds_to_clock(1 / self._data_rate)
+        if self._data_rate <= 0:
+            raise self.printer.command_error(
+                "Invalid data_rate in inductance_coil")
+        rest_ticks = self._mcu.seconds_to_clock(1.0 / self._data_rate)
         self.query_inductance_coil_cmd.send([self._oid, rest_ticks])
         logging.info("Inductance coil starting '%s' measurements", self.name)
         # Initialize clock tracking

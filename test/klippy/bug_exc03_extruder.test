@@ -1,0 +1,4 @@
+CONFIG bug_exc03_extruder.cfg
+DICTIONARY simulator.dict
+ACTIVATE_EXTRUDER EXTRUDER=extruder
+

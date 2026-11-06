@@ -44,23 +44,36 @@ class MQTTClient:
         self.client.on_publish = self._on_publish
         self.client.on_subscribe = self._on_subscribe
         self.client.on_unsubscribe = self._on_unsubscribe
-        self.client.loop_start()
         self.client.reconnect_delay_set(min_delay=1, max_delay=120)
-        self.client.connect(self.address, self.port)
+        try:
+            self.client.connect_async(self.address, self.port)
+            self.client.loop_start()
+        except Exception:
+            try:
+                self.client.loop_stop()
+            except Exception:
+                pass
+            raise
 
         self.printer.register_event_handler('klippy:shutdown', self._handle_shutdown)
         self.printer.register_event_handler("gcode:request_restart",
                                             self._handle_request_restart)
 
     def _handle_shutdown(self):
-        self.client.reconnect_delay_set(min_delay=0, max_delay=0)
-        self.client.disconnect()
-        self.client.loop_stop()
+        try:
+            self.client.reconnect_delay_set(min_delay=0, max_delay=0)
+            self.client.disconnect()
+            self.client.loop_stop()
+        except Exception:
+            pass
 
     def _handle_request_restart(self, print_time):
-        self.client.reconnect_delay_set(min_delay=0, max_delay=0)
-        self.client.disconnect()
-        self.client.loop_stop()
+        try:
+            self.client.reconnect_delay_set(min_delay=0, max_delay=0)
+            self.client.disconnect()
+            self.client.loop_stop()
+        except Exception:
+            pass
 
     def get_status(self, eventtime=None):
         return {
@@ -152,7 +165,7 @@ class MQTTClient:
         if callable(callback) is False:
             raise Exception("[mqtt] callback must be callable")
 
-        qos = qos or self.qos
+        qos = self.qos if qos is None else qos
         if qos < 0 or qos > 2:
             raise Exception("[mqtt] qos must in range [0, 2]")
 
@@ -209,7 +222,7 @@ class MQTTClient:
         if self.client is None or self.is_connected() is False:
             raise Exception("[mqtt] mqtt is not connected")
 
-        qos = qos or self.qos
+        qos = self.qos if qos is None else qos
         if qos < 0 or qos > 2:
             raise Exception("[mqtt] qos must in range [0, 2]")
 

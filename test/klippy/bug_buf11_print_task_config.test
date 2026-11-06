@@ -1,0 +1,8 @@
+# Test case for BUG-BUF-11: Out-of-bounds extruder index in print_task_config
+CONFIG bug_buf11_print_task_config.cfg
+DICTIONARY simulator.dict
+SHOULD_FAIL
+
+# Attempt setting out-of-bounds extruder index (5 >= PHYSICAL_EXTRUDER_NUM)
+SET_PRINT_USED_EXTRUDERS EXTRUDERS=0,5
+

@@ -84,8 +84,12 @@ class QueueListener:
                         with open(temp_filename, 'w') as f:
                             if op.content:
                                 f.write(op.content)
-                            # f.flush()
-                            # os.fdatasync(f.fileno())
+                            if op.flush:
+                                f.flush()
+                                if hasattr(os, 'fdatasync'):
+                                    os.fdatasync(f.fileno())
+                                elif hasattr(os, 'fsync'):
+                                    os.fsync(f.fileno())
                         os.replace(temp_filename, op.filename)
                     except Exception:
                         if os.path.exists(temp_filename):
@@ -98,15 +102,19 @@ class QueueListener:
                     with open(op.filename, 'w') as f:
                         if op.content:
                             f.write(op.content)
-                        # f.flush()
-                        # os.fdatasync(f.fileno())
+                        if op.flush:
+                            f.flush()
+                            if hasattr(os, 'fdatasync'):
+                                os.fdatasync(f.fileno())
+                            elif hasattr(os, 'fsync'):
+                                os.fsync(f.fileno())
                 result = True
 
             elif op.op_type == "delete":
-                if os.path.exists(op.filename):
-                    os.remove(op.filename)
-                elif os.path.isdir(op.filename):
+                if os.path.isdir(op.filename) and not os.path.islink(op.filename):
                     shutil.rmtree(op.filename)
+                elif os.path.lexists(op.filename):
+                    os.remove(op.filename)
                 result = True
 
             elif op.op_type == "append" and op.content:
@@ -125,8 +133,12 @@ class QueueListener:
                         with open(temp_filename, 'w') as f:
                             f.write(original_content)
                             f.write(op.content)
-                            # f.flush()
-                            # os.fdatasync(f.fileno())
+                            if op.flush:
+                                f.flush()
+                                if hasattr(os, 'fdatasync'):
+                                    os.fdatasync(f.fileno())
+                                elif hasattr(os, 'fsync'):
+                                    os.fsync(f.fileno())
 
                         os.replace(temp_filename, op.filename)
                     except Exception:
@@ -139,8 +151,12 @@ class QueueListener:
                 else:
                     with open(op.filename, 'a') as f:
                         f.write(op.content)
-                        # f.flush()
-                        # os.fdatasync(f.fileno())
+                        if op.flush:
+                            f.flush()
+                            if hasattr(os, 'fdatasync'):
+                                os.fdatasync(f.fileno())
+                            elif hasattr(os, 'fsync'):
+                                os.fsync(f.fileno())
                 result = True
 
             if op.sync:

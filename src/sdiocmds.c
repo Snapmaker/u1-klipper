@@ -25,6 +25,7 @@ command_config_sdio(uint32_t *args)
 {
     struct sdiodev_s *sdio = oid_alloc(args[0], command_config_sdio
                                        , sizeof(*sdio));
+    memset(&sdio->sdio_config, 0, sizeof(sdio->sdio_config));
     sdio->blocksize = args[1];
     sdio->speed = 400000; // Initial speed set to ~400khz
 }
@@ -40,6 +41,9 @@ void
 command_sdio_set_bus(uint32_t *args)
 {
     struct sdiodev_s *sdio = sdiodev_oid_lookup(args[0]);
+    if (!sdio) {
+        return;
+    }
     sdio->sdio_config = sdio_setup(args[1]);
 }
 DECL_COMMAND(command_sdio_set_bus, "sdio_set_bus oid=%c sdio_bus=%u");
@@ -48,6 +52,9 @@ void
 command_sdio_set_speed(uint32_t *args)
 {
     struct sdiodev_s *sdio = sdiodev_oid_lookup(args[0]);
+    if (!sdio || !sdio->sdio_config.sdio) {
+        return;
+    }
     sdio->speed = args[1];
     sdio_set_speed(sdio->sdio_config, sdio->speed);
 }
@@ -61,6 +68,11 @@ command_sdio_send_command(uint32_t *args)
     uint32_t argument = args[2];
     uint8_t wait = args[3];
     struct sdiodev_s *sdio = sdiodev_oid_lookup(oid);
+    if (!sdio || !sdio->sdio_config.sdio) {
+        sendf("sdio_send_command_response oid=%c error=%c response=%*s"
+              , oid, 1, 0, "");
+        return;
+    }
     uint8_t response[16];
     uint8_t response_len = 0;
     uint8_t err = sdio_send_command(sdio->sdio_config, cmd, argument, wait
@@ -79,7 +91,12 @@ command_sdio_read_data(uint32_t *args)
     uint32_t argument = args[2];
     uint32_t data_len = 0;
     struct sdiodev_s *sdio = sdiodev_oid_lookup(oid);
-    uint32_t timeout = TIMEOUT_MSEC*sdio->speed/1000;
+    if (!sdio || !sdio->sdio_config.sdio) {
+        sendf("sdio_read_data_response oid=%c error=%c read=%u"
+              , oid, 1, 0);
+        return;
+    }
+    uint32_t timeout = (uint32_t)((uint64_t)TIMEOUT_MSEC * sdio->speed / 1000);
     uint8_t err = sdio_prepare_data_transfer(sdio->sdio_config, 1, 1
                                              , sdio->blocksize, timeout);
     if (err == 0) {
@@ -109,7 +126,12 @@ command_sdio_write_data(uint32_t *args)
     uint32_t argument = args[2];
     uint32_t data_len = 0;
     struct sdiodev_s *sdio = sdiodev_oid_lookup(oid);
-    uint32_t timeout = TIMEOUT_MSEC*sdio->speed/1000;
+    if (!sdio || !sdio->sdio_config.sdio) {
+        sendf("sdio_write_data_response oid=%c error=%c write=%u"
+              , oid, 1, 0);
+        return;
+    }
+    uint32_t timeout = (uint32_t)((uint64_t)TIMEOUT_MSEC * sdio->speed / 1000);
     uint8_t err = sdio_prepare_data_transfer(sdio->sdio_config, 0, 1
                                              , sdio->blocksize, timeout);
     if (err == 0) {
@@ -138,11 +160,15 @@ command_sdio_read_data_buffer(uint32_t *args)
     uint32_t offset = args[1];
     uint8_t len = args[2];
     struct sdiodev_s *sdio = sdiodev_oid_lookup(oid);
-    uint8_t *buf = &(sdio->data_buffer[offset]);
+    if (!sdio) {
+        return;
+    }
 
-    if (offset + len > sizeof(sdio->data_buffer)) {
+    if (offset >= sizeof(sdio->data_buffer) ||
+        len > sizeof(sdio->data_buffer) - offset) {
         len = 0;
     }
+    uint8_t *buf = len ? &sdio->data_buffer[offset] : NULL;
     sendf("sdio_read_data_buffer_response oid=%c data=%*s", oid, len, buf);
 }
 DECL_COMMAND(command_sdio_read_data_buffer
@@ -156,11 +182,16 @@ command_sdio_write_data_buffer(uint32_t *args)
     uint8_t write_data_len = args[2];
     uint8_t *write_data = command_decode_ptr(args[3]);
     struct sdiodev_s *sdio = sdiodev_oid_lookup(oid);
-    uint8_t *buf = &(sdio->data_buffer[offset]);
-
-    if (offset + write_data_len <= sizeof(sdio->data_buffer)) {
-        memcpy(buf, write_data, write_data_len);
+    if (!sdio || !write_data) {
+        return;
     }
+
+    if (offset >= sizeof(sdio->data_buffer) ||
+        write_data_len > sizeof(sdio->data_buffer) - offset) {
+        return;
+    }
+    uint8_t *buf = &sdio->data_buffer[offset];
+    memcpy(buf, write_data, write_data_len);
 }
 DECL_COMMAND(command_sdio_write_data_buffer
              , "sdio_write_data_buffer oid=%c offset=%u data=%*s");

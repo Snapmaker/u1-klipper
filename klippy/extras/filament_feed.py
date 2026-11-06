@@ -265,6 +265,7 @@ class FeedMotorPwmCfg:
 
 class FeedMotor:
     def __init__(self, printer, reactor, cfg:FeedMotorPwmCfg):
+        self.printer = printer
         self.reactor = reactor
         ppins = printer.lookup_object('pins')
         self.max_value = cfg.max_value
@@ -313,64 +314,70 @@ class FeedMotor:
         self._last_print_time = print_time + delta
 
     def run(self, dir, value):
-        while self._mutex_lock:
+        while self._mutex_lock and not self.printer.is_shutdown():
             self.reactor.pause(self.reactor.monotonic() + 0.1)
+        if self.printer.is_shutdown():
+            return
         self._mutex_lock = True
+        try:
+            val = max(0, min(self.max_value, value))
+            if val == 0:
+                dir = FEED_MOTOR_DIR_IDLE
 
-        val = max(0, min(self.max_value, value))
-        if val == 0:
-            dir = FEED_MOTOR_DIR_IDLE
-
-        while 1:
-            if FEED_MOTOR_DIR_IDLE == self._dir:
-                if FEED_MOTOR_DIR_IDLE == dir:
-                    break
-                self._dir = dir
-                self._run(dir, val)
-                self.reactor.pause(self.reactor.monotonic() + 1.05 * FEED_MIN_TIME)
-            else:
-                if dir == self._dir:
+            while 1:
+                if FEED_MOTOR_DIR_IDLE == self._dir:
+                    if FEED_MOTOR_DIR_IDLE == dir:
+                        break
+                    self._dir = dir
                     self._run(dir, val)
                     self.reactor.pause(self.reactor.monotonic() + 1.05 * FEED_MIN_TIME)
+                else:
+                    if dir == self._dir:
+                        self._run(dir, val)
+                        self.reactor.pause(self.reactor.monotonic() + 1.05 * FEED_MIN_TIME)
+                    else:
+                        self._run(FEED_MOTOR_DIR_IDLE, 0)
+                        self.reactor.pause(self.reactor.monotonic() + FEED_MOTOR_HARD_PROTECT_TIME)
+                        self._dir = FEED_MOTOR_DIR_IDLE
+                        if FEED_MOTOR_DIR_IDLE != dir:
+                            self._dir = dir
+                            self._run(dir, val)
+                            self.reactor.pause(self.reactor.monotonic() + 1.05 * FEED_MIN_TIME)
+                break
+        finally:
+            self._mutex_lock = False
+
+    def run_one_cycle(self, dir, value, time):
+        while self._mutex_lock and not self.printer.is_shutdown():
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        if self.printer.is_shutdown():
+            return
+        self._mutex_lock = True
+        try:
+            val = max(0, min(self.max_value, value))
+            if val == 0:
+                dir = FEED_MOTOR_DIR_IDLE
+
+            while 1:
+                if FEED_MOTOR_DIR_IDLE == self._dir:
+                    if FEED_MOTOR_DIR_IDLE == dir:
+                        break
+                    self._dir = dir
+                    self._run_one_cycle(dir, val, time)
+                    self.reactor.pause(self.reactor.monotonic() + 1.05 * (FEED_MIN_TIME + time))
+                    self._dir = FEED_MOTOR_DIR_IDLE
                 else:
                     self._run(FEED_MOTOR_DIR_IDLE, 0)
                     self.reactor.pause(self.reactor.monotonic() + FEED_MOTOR_HARD_PROTECT_TIME)
                     self._dir = FEED_MOTOR_DIR_IDLE
                     if FEED_MOTOR_DIR_IDLE != dir:
                         self._dir = dir
-                        self._run(dir, val)
-                        self.reactor.pause(self.reactor.monotonic() + 1.05 * FEED_MIN_TIME)
-            break
-        self._mutex_lock = False
-
-    def run_one_cycle(self, dir, value, time):
-        while self._mutex_lock:
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
-        self._mutex_lock = True
-
-        val = max(0, min(self.max_value, value))
-        if val == 0:
-            dir = FEED_MOTOR_DIR_IDLE
-
-        while 1:
-            if FEED_MOTOR_DIR_IDLE == self._dir:
-                if FEED_MOTOR_DIR_IDLE == dir:
-                    break
-                self._dir = dir
-                self._run_one_cycle(dir, val, time)
-                self.reactor.pause(self.reactor.monotonic() + 1.05 * (FEED_MIN_TIME + time))
-                self._dir = FEED_MOTOR_DIR_IDLE
-            else:
-                self._run(FEED_MOTOR_DIR_IDLE, 0)
-                self.reactor.pause(self.reactor.monotonic() + FEED_MOTOR_HARD_PROTECT_TIME)
-                self._dir = FEED_MOTOR_DIR_IDLE
-                if FEED_MOTOR_DIR_IDLE != dir:
-                    self._dir = dir
-                    self._run_one_cycle(dir, val, time)
-                    self.reactor.pause(self.reactor.monotonic() + 1.05 * (FEED_MIN_TIME + time))
-                    self._dir = FEED_MOTOR_DIR_IDLE
-            break
-        self._mutex_lock = False
+                        self._run_one_cycle(dir, val, time)
+                        self.reactor.pause(self.reactor.monotonic() + 1.05 * (FEED_MIN_TIME + time))
+                        self._dir = FEED_MOTOR_DIR_IDLE
+                break
+        finally:
+            self._mutex_lock = False
 
 class FilamentFeed:
     def __init__(self, config):
@@ -410,11 +417,11 @@ class FilamentFeed:
         self.light = []
         white_pin = config.get('light_ch_1_white')
         red_pin = config.get('light_ch_1_red')
-        tmp_obj = FeedLight(self.printer, self.reactor, white_pin, red_pin)
+        tmp_obj = FeedLight(self.printer, self.reactor, red_pin=red_pin, white_pin=white_pin)
         self.light.append(tmp_obj)
         white_pin = config.get('light_ch_2_white')
         red_pin = config.get('light_ch_2_red')
-        tmp_obj = FeedLight(self.printer, self.reactor, white_pin, red_pin)
+        tmp_obj = FeedLight(self.printer, self.reactor, red_pin=red_pin, white_pin=white_pin)
         self.light.append(tmp_obj)
         self.gcode.register_mux_command("FEED_LIGHT", "MODULE",
                                 self.module_name,
@@ -552,6 +559,11 @@ class FilamentFeed:
         for ch in range(FEED_CHANNEL_NUMS):
             self.channel_state[ch] = FEED_STA_INITED
 
+    def _get_runout_detected(self, ch, default=False):
+        if 0 <= ch < len(self.runout_sensor) and self.runout_sensor[ch] is not None:
+            return self.runout_sensor[ch].get_status(0).get('filament_detected', default)
+        return default
+
     def _ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
         self.gcode_move = self.printer.lookup_object('gcode_move')
@@ -581,7 +593,7 @@ class FilamentFeed:
                 self.module_exist[ch] = False
 
             if self.config['auto_mode'][ch] == True and self.module_exist[ch] == True:
-                if self.filament_detect.is_startup_stay() == False:
+                if self.filament_detect is None or self.filament_detect.is_startup_stay() == False:
                     self.printer.send_event("filament_feed:port", self.filament_ch[ch],
                                             self._port[ch].get_filament_detected())
                 if self._port[ch].get_filament_detected() == False:
@@ -642,7 +654,7 @@ class FilamentFeed:
     def _port_event_handler(self, detected, channel):
         if self.debug_mode != 0:
             logging.info("[feed] port event: channel=%d, detected=%d" % (channel, detected))
-            runout_sensor_status = self.runout_sensor[channel].get_status(0)
+            runout_sensor_status = self.runout_sensor[channel].get_status(0) if (0 <= channel < len(self.runout_sensor) and self.runout_sensor[channel] is not None) else None
             feed_status = self.get_status()
             logging.info("[feed] port event: channel=%d, runout_sensor_status=%s, feed_status=%s" % (channel, str(runout_sensor_status), str(feed_status)))
 
@@ -759,26 +771,28 @@ class FilamentFeed:
             wheel_cnt_a_1 = self.wheel[ch].get_counts()
             wheel_cnt_b_1 = self.wheel_2[ch].get_counts()
 
-        while self.channel_active != None:
+        while self.channel_active != None and not self.printer.is_shutdown():
             self.reactor.pause(self.reactor.monotonic() + 0.1)
+        if self.printer.is_shutdown():
+            return
         self.channel_active = ch
-        self.channel_error[ch] = FEED_OK
-        self.exception_code[ch] = 0
-
-        filament_parameters = self._get_filament_parameters(ch)
-        filament_load_temp = FEED_FILAMENT_TEMP_DEFAULT
-        filament_unload_temp = FEED_FILAMENT_TEMP_DEFAULT
-        filament_soft = False
-        if filament_parameters != None:
-            filament_load_temp = filament_parameters['load_temp']
-            filament_unload_temp = filament_parameters['unload_temp']
-            filament_soft = filament_parameters['is_soft']
-
-        motor_dir = FEED_MOTOR_DIR_A
-        if ch == FEED_CHANNEL_2:
-            motor_dir = FEED_MOTOR_DIR_B
-
         try:
+            self.channel_error[ch] = FEED_OK
+            self.exception_code[ch] = 0
+
+            filament_parameters = self._get_filament_parameters(ch)
+            filament_load_temp = FEED_FILAMENT_TEMP_DEFAULT
+            filament_unload_temp = FEED_FILAMENT_TEMP_DEFAULT
+            filament_soft = False
+            if filament_parameters != None:
+                filament_load_temp = filament_parameters['load_temp']
+                filament_unload_temp = filament_parameters['unload_temp']
+                filament_soft = filament_parameters['is_soft']
+
+            motor_dir = FEED_MOTOR_DIR_A
+            if ch == FEED_CHANNEL_2:
+                motor_dir = FEED_MOTOR_DIR_B
+
             # update auto-mode
             if action == FEED_ACT_UPDATE_AUTO_MODE:
                 self.config['auto_mode'][ch] = bool(auto_mode)
@@ -829,10 +843,10 @@ class FilamentFeed:
                         self.exception_code[ch] = 13
                         raise
 
-                    if self.runout_sensor[ch].get_status(0)['filament_detected']:
+                    if self._get_runout_detected(ch):
                         self.channel_error[ch] = FEED_ERR_RESIDUAL_FILAMENT
                         self.exception_code[ch] = 15
-                        raise
+                        raise Exception("Residual filament detected")
 
                     self.reactor.pause(self.reactor.monotonic() + 1)
 
@@ -854,14 +868,14 @@ class FilamentFeed:
                         for i in range(3):
                             self.motor.run(motor_dir, preload_duty)
                             self.reactor.pause(self.reactor.monotonic() + 0.35)
-                            arrive_runout_sensor = self.runout_sensor[ch].get_status(0)['filament_detected']
+                            arrive_runout_sensor = self._get_runout_detected(ch)
                             if arrive_runout_sensor == True or preload_duty >= 1.0:
                                 break
                             preload_duty = min(1.0, preload_duty + 0.1)
                         if arrive_runout_sensor == False and preload_duty < 1.0:
                             self.motor.run(motor_dir, 1.0)
                             self.reactor.pause(self.reactor.monotonic() + 0.2)
-                            arrive_runout_sensor = self.runout_sensor[ch].get_status(0)['filament_detected']
+                            arrive_runout_sensor = self._get_runout_detected(ch)
                     logging.info("[feed_preload] extruder[%d], duty:%f, ", self.filament_ch[ch], preload_duty)
 
                     motor_speed = 0
@@ -878,7 +892,7 @@ class FilamentFeed:
                             wheel_speed_a = self.wheel[ch].get_rpm()
                             wheel_speed_b = self.wheel_2[ch].get_rpm()
                             port_detect = self._port[ch].get_filament_detected()
-                            runout_detect = self.runout_sensor[ch].get_status(0)['filament_detected']
+                            runout_detect = self._get_runout_detected(ch)
 
                             # Please do not adjust the order arbitrarily
                             if runout_detect == True:
@@ -932,7 +946,7 @@ class FilamentFeed:
                                  self.filament_ch[ch], wheel_cnt_a_1, wheel_cnt_b_1, wheel_cnt_a_2, wheel_cnt_b_2, wheel_speed_a, wheel_speed_b,
                                  motor_cnt_1, motor_cnt_2, motor_speed)
                     if self.channel_error[ch] != FEED_OK:
-                        raise
+                        raise Exception(f"Channel error: {self.channel_error[ch]}")
 
                     self._set_channel_state(ch, FEED_STA_PRELOAD_FINISH)
 
@@ -1002,7 +1016,7 @@ class FilamentFeed:
                     self.toolhead.wait_moves()
 
                     # Please do not adjust the order arbitrarily
-                    if self.runout_sensor[ch].get_status(0)['filament_detected'] == False:
+                    if self._get_runout_detected(ch) == False:
                         # move to dest position
                         try:
                             self.toolhead.wait_moves()
@@ -1036,7 +1050,7 @@ class FilamentFeed:
                             wheel_cnt_a_2 = self.wheel[ch].get_counts()
                             wheel_cnt_b_2 = self.wheel_2[ch].get_counts()
                             port_detect = self._port[ch].get_filament_detected()
-                            runout_detect = self.runout_sensor[ch].get_status(0)['filament_detected']
+                            runout_detect = self._get_runout_detected(ch)
                             logging.info("[feed_loading] phase2: duty:%f, period:%f, "
                                          "wheel, cnt_a_0:%d, cnt_a_1:%d, cnt_a_2:%d, cnt_b_0:%d, cnt_b_1:%d, cnt_b_2:%d, cnterr:%d, "
                                          "motor, cnt_0:%d, cnt_1:%d, cnt_2:%d, cnterr:%d",
@@ -1209,9 +1223,9 @@ class FilamentFeed:
                             self.reactor.pause(self.reactor.monotonic() + 0.7)
 
                             if retry < 5:
-                                duty = max(1.0, duty + 0.05)
+                                duty = min(1.0, duty + 0.05)
                             else:
-                                period = max(0.12, period + 0.01)
+                                period = min(0.12, period + 0.01)
                             self.motor.run_one_cycle(motor_dir, duty, period)
                             self.toolhead.wait_moves()
                             logging.info(f"[feed_loading] phase3: retry:{retry}, duty:{duty}, period:{period}")

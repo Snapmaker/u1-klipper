@@ -3,7 +3,7 @@
 # Copyright (C) 2017-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, copy, time, os
+import logging, copy, time, os, math
 import pins, queuefile
 from . import manual_probe
 from . import inductance_coil
@@ -53,35 +53,17 @@ def find_circle_center(A, B, C):
     x2, y2 = map(Decimal, B)
     x3, y3 = map(Decimal, C)
 
-    xm1 = (x1 + x2) / Decimal(2)
-    ym1 = (y1 + y2) / Decimal(2)
-    xm2 = (x2 + x3) / Decimal(2)
-    ym2 = (y2 + y3) / Decimal(2)
+    # Determinant: D = 2 * (x1*(y2 - y3) + x2*(y3 - y1) + x3*(y1 - y2))
+    D = Decimal(2) * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+    if abs(D) < Decimal('1e-9'):
+        raise ValueError("Points are collinear or degenerate, cannot find circle center")
 
+    sq1 = x1 * x1 + y1 * y1
+    sq2 = x2 * x2 + y2 * y2
+    sq3 = x3 * x3 + y3 * y3
 
-    if x2 - x1 == Decimal(0):
-        m1 = Decimal('Infinity')
-    else:
-        m1 = (y2 - y1) / (x2 - x1)
-
-    if x3 - x2 == Decimal(0):
-        m2 = Decimal('Infinity')
-    else:
-        m2 = (y3 - y2) / (x3 - x2)
-
-    m_perp1 = -1 / m1 if m1 != Decimal(0) else Decimal(0)
-    m_perp2 = -1 / m2 if m2 != Decimal(0) else Decimal(0)
-
-    if m_perp1 == Decimal(0) or m_perp2 == Decimal(0):
-        if m_perp1 == Decimal(0):
-            h = xm1
-            k = ym2 - m_perp2 * (xm2 - xm1)
-        elif m_perp2 == Decimal(0):
-            h = xm2
-            k = ym1 - m_perp1 * (xm1 - xm2)
-    else:
-        h = (ym2 - ym1 + m_perp1*xm1 - m_perp2*xm2) / (m_perp1 - m_perp2)
-        k = m_perp1 * (h - xm1) + ym1
+    h = (sq1 * (y2 - y3) + sq2 * (y3 - y1) + sq3 * (y1 - y2)) / D
+    k = (sq1 * (x3 - x2) + sq2 * (x1 - x3) + sq3 * (x2 - x1)) / D
 
     return (float(h), float(k))
 
@@ -315,8 +297,10 @@ class ProbeCommandHelper:
     cmd_PROBE_XYZ_OFFSET_CALIBRATE_help = "Probe the x y z position of a specified place"
     def find_circle_center_least_squares(self, points):
         import numpy as np
+        if len(points) < 3:
+            raise ValueError("At least 3 points required to calculate circle center")
         # Convert points to numpy array
-        points = np.array(points)
+        points = np.array(points, dtype=float)
         x = points[:, 0]
         y = points[:, 1]
 
@@ -325,7 +309,15 @@ class ProbeCommandHelper:
         b = x**2 + y**2
 
         # Solve using least squares
-        c_x, c_y, _ = np.linalg.lstsq(A, b, rcond=None)[0]
+        try:
+            res, residuals, rank, s = np.linalg.lstsq(A, b, rcond=None)
+        except Exception as e:
+            raise ValueError(f"Least squares calculation failed: {str(e)}")
+        if rank < 3:
+            raise ValueError("Points are collinear or rank deficient for circle center")
+        c_x, c_y = float(res[0]), float(res[1])
+        if math.isnan(c_x) or math.isnan(c_y) or math.isinf(c_x) or math.isinf(c_y):
+            raise ValueError("Circle center coordinates are non-finite")
 
         return float(c_x), float(c_y)
 
@@ -494,7 +486,20 @@ class ProbeCommandHelper:
                 # probe in xy plane
                 points_pos = self._probe_xy(xy_gcmd, params, xyp, center)
                 if len(points_pos) >= 3:
-                    center[0], center[1] = self.find_circle_center_least_squares(points_pos)
+                    try:
+                        new_x, new_y = self.find_circle_center_least_squares(points_pos)
+                        max_dev = params.get('max_center_deviation', 20.0)
+                        dist = math.hypot(new_x - center[0], new_y - center[1])
+                        if dist > max_dev:
+                            raise gcmd.error(
+                                f"Calculated circle center ({new_x:.4f}, {new_y:.4f}) "
+                                f"deviated too far ({dist:.4f} mm > {max_dev} mm) from initial center"
+                            )
+                        center[0], center[1] = new_x, new_y
+                    except Exception as e:
+                        if isinstance(e, gcmd.error):
+                            raise
+                        raise gcmd.error(f"Failed to calculate circle center: {str(e)}")
                 # move to center of circle
                 gcmd.respond_info(f'Got center: {center[0]:.4f}, {center[1]:.4f}, {center[2]:.4f}')
                 self._move([center[0]+params['z_probe_x_move_offset'], center[1]+params['z_probe_y_move_offset'], None], params['travel_speed'])
@@ -548,10 +553,16 @@ class ProbeCommandHelper:
         except ExtruderOffsetCalAbort as e:
             gcmd.respond_info("ExtruderOffsetCal Abort Success")
         finally:
-            self._move([None, None, params['horizontal_move_z']], params['travel_speed'])
-            self._move([center[0], center[1], params['horizontal_move_z']], params['travel_speed'])
             if cur_accel is not None and cur_accel != toolhead.max_accel:
-                toolhead.set_accel(cur_accel)
+                try:
+                    toolhead.set_accel(cur_accel)
+                except Exception:
+                    pass
+            try:
+                self._move([None, None, params['horizontal_move_z']], params['travel_speed'])
+                self._move([center[0], center[1], params['horizontal_move_z']], params['travel_speed'])
+            except Exception:
+                pass
 
 # Homing via probe:z_virtual_endstop
 class HomingViaProbeHelper:
@@ -866,8 +877,9 @@ class ProbeSessionHelper:
                 result = extruder.analyze_switch_extruder_error(activate_status)
                 if result:
                     error_msg, activated, unknown, grip_states, activated_code, unknown_code = result
-                    if grab_hall_sensor_type and "multi-act" not in error_msg:
-                        grip_state = grip_states[unknown[0]]
+                    if grab_hall_sensor_type and "multi-act" not in error_msg and unknown:
+                        if 0 <= unknown[0] < len(grip_states):
+                            grip_state = grip_states[unknown[0]]
                         message = None
                         if grip_state == 'FFF':
                             info = "Probing abort: detected that extruder%d is detached. %s" % (unknown[0], error_msg)
@@ -1236,13 +1248,15 @@ class ProbePointsHelper:
 
 # Helper to obtain a single probe measurement
 def run_single_probe(probe, gcmd):
+    probe_session = None
     try:
         probe_session = probe.start_probe_session(gcmd)
         probe_session.run_probe(gcmd)
         pos = probe_session.pull_probed_results()[0]
         return pos
     finally:
-        probe_session.end_probe_session()
+        if probe_session is not None:
+            probe_session.end_probe_session()
 
 ######################################################################
 # Handle [probe] config
@@ -1446,24 +1460,36 @@ class ExtruderOffsetCalibration:
             web_request.send({'state': 'error', 'message': str(e)})
 
     def _get_filament_temp(self, extruder):
+        if extruder is None or not isinstance(extruder, int) or extruder < 0:
+            return 200
         print_task_config = self.printer.lookup_object('print_task_config', None)
         filament_parameters = self.printer.lookup_object('filament_parameters', None)
         extruder_obj = self.printer.lookup_object(f'extruder', None)
-        if extruder is not None and extruder != 0:
+        if extruder != 0:
             extruder_obj = self.printer.lookup_object(f'extruder{extruder}', None)
         if print_task_config is None or filament_parameters is None or extruder_obj is None:
             return 200
 
         status = print_task_config.get_status()
+        vendors = status.get('filament_vendor', [])
+        types = status.get('filament_type', [])
+        sub_types = status.get('filament_sub_type', [])
+        if not (0 <= extruder < len(vendors) and
+                0 <= extruder < len(types) and
+                0 <= extruder < len(sub_types)):
+            return 200
+
         temp = filament_parameters.get_print_temp(
-                status['filament_vendor'][extruder],
-                status['filament_type'][extruder],
-                status['filament_sub_type'][extruder],
+                vendors[extruder],
+                types[extruder],
+                sub_types[extruder],
                 extruder_obj.nozzle_diameter,
                 extruder_obj.nozzle_volume_type)
         return temp - 20
 
     def _get_filament_soft(self, extruder):
+        if extruder is None or not isinstance(extruder, int) or extruder < 0:
+            return False
         print_task_config = self.printer.lookup_object('print_task_config', None)
         filament_parameters = self.printer.lookup_object('filament_parameters', None)
         extruder_obj = self.printer.lookup_object(f'extruder', None)
@@ -1473,10 +1499,18 @@ class ExtruderOffsetCalibration:
             return False
 
         status = print_task_config.get_status()
+        vendors = status.get('filament_vendor', [])
+        types = status.get('filament_type', [])
+        sub_types = status.get('filament_sub_type', [])
+        if not (0 <= extruder < len(vendors) and
+                0 <= extruder < len(types) and
+                0 <= extruder < len(sub_types)):
+            return False
+
         return filament_parameters.get_is_soft(
-                status['filament_vendor'][extruder],
-                status['filament_type'][extruder],
-                status['filament_sub_type'][extruder],
+                vendors[extruder],
+                types[extruder],
+                sub_types[extruder],
                 extruder_obj.nozzle_diameter,
                 extruder_obj.nozzle_volume_type)
 
@@ -1572,7 +1606,7 @@ class ExtruderOffsetCalibration:
                 hole_position = [
                     macro.variables.get('hole_x', hole_x),
                     macro.variables.get('hole_y', hole_y),
-                    macro.variables.get('hole_z', hole_x)
+                    macro.variables.get('hole_z', hole_z)
                 ]
                 solid_position = [
                     macro.variables.get('solid_x', solid_x),

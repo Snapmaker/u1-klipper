@@ -169,7 +169,7 @@ class PrinterMCUError:
         self.printer.update_error_msg(msg, newmsg)
     def _handle_notify_mcu_error(self, msg, details):
         # if msg == "Protocol error":
-        if "Protocol error" in msg:
+        if msg and "Protocol error" in msg:
             self._check_protocol_error(msg, details)
         # elif msg == "MCU error during connect":
         elif msg and "MCU error during connect" in msg:
