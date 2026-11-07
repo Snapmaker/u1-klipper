@@ -366,9 +366,20 @@ class PrintTaskConfig:
             logging.error(f"[print_task_config] rfid info error: {str(e)}")
 
 
-        if is_clear == False:
+        if is_clear == False and not self._same_filament_reloaded(channel):
             # do not use run_script_from_command api
             self.gcode.run_script(f"FLOW_RESET_K EXTRUDER={channel}\r\n")
+
+    def _same_filament_reloaded(self, channel):
+        # A spool fed back while paused (the runout prompt) keeps the head's measured flow
+        # factor, unless its tag names another filament than the one backed up at the runout
+        pause_resume = self.printer.lookup_object('pause_resume', None)
+        if pause_resume is None or not pause_resume.is_paused:
+            return False
+        if self.print_task_config['filament_vendor'][channel] in ("", "NONE"):
+            return True
+        return all(self.print_task_config[key][channel] == self.filament_info_backup[key][channel]
+                   for key in ('filament_vendor', 'filament_type', 'filament_sub_type'))
 
     def reset_filament_info(self, extruder_index):
         if extruder_index < 0 or extruder_index >= PHYSICAL_EXTRUDER_NUM:
@@ -883,7 +894,7 @@ class PrintTaskConfig:
                             self.print_task_config, DEFAULT_PRINT_TASK_CONFIG):
                         logging.error("[print_task_config] save print_task_config failed\r\n")
 
-                    self.gcode.run_script_from_command(f"FLOW_RESET_K EXTRUDER={extruder_index}\r\n")
+                    # same filament as before the runout: its measured flow factor stays
 
             except Exception as e:
                 logging.error("[print_task_config] INNER_CHECK_AND_RELOAD_FILAMENT_INFO error: %s", str(e))
