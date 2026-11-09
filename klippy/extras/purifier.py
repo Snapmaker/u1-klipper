@@ -874,6 +874,7 @@ class Purifier:
         return status_dict
 
     def _handle_control_purifier(self, web_request):
+        need_save = False
         try:
             fan = web_request.get('fan', None)
             speed = web_request.get_int('speed', None)
@@ -881,8 +882,6 @@ class Purifier:
             work = web_request.get_int('work', None)
             skip_delay = web_request.get_int('skip_delay', 1)
             logging.info(f"[purifier] wb, control_purifier: {web_request.get_raw_parameters()}")
-
-            need_save = False
 
             if fan not in VALID_PURIFIER_FAN_TYPE:
                 raise ValueError("[purifier] fan neme error!")
@@ -1156,7 +1155,6 @@ class Purifier:
 
         # Calculate wait timeout based on user-specified timeout
         wait_timeout_time = cur_time + timeout + 5  # Adding small buffer
-        timer_execution_counter = self.timer_execution_counter
         last_info_time = cur_time
 
         self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=PREHEAT_CHAMBER")
@@ -1185,9 +1183,6 @@ class Purifier:
                 last_info_time = current_time
 
             self.reactor.pause(self.reactor.monotonic() + 0.5)
-            if timer_execution_counter != self.timer_execution_counter:
-                wait_timeout_time = self.reactor.monotonic() + 5*self.check_interval + 2
-                timer_execution_counter = self.timer_execution_counter
         self._reset_preheat_state()
         self.reactor.pause(self.reactor.monotonic() + 0.5)
         self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=IDLE")

@@ -207,8 +207,8 @@ class HomingXYZOverride:
             y_count = params['y_count']
             min_x, max_x = params['min_x'], params['max_x']
             min_y, max_y = params['min_y'], params['max_y']
-            x_step = (max_x - min_x) / (x_count - 1)
-            y_step = (max_y - min_y) / (y_count - 1)
+            x_step = (max_x - min_x) / (x_count - 1) if x_count > 1 else 0.0
+            y_step = (max_y - min_y) / (y_count - 1) if y_count > 1 else 0.0
             x_mid_index = (x_count - 1) // 2
             y_mid_index = (y_count - 1) // 2
             home_x_pos = min_x + x_mid_index * x_step

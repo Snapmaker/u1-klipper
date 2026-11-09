@@ -67,9 +67,8 @@ def dump_mcu_build():
     # Try to log last mcu config
     dump_file_stats(build_dir, '.config')
     try:
-        f = open(os.path.join(build_dir, '.config'), 'r')
-        data = f.read(32*1024)
-        f.close()
+        with open(os.path.join(build_dir, '.config'), 'r') as f:
+            data = f.read(32*1024)
         logging.info("========= Last MCU build config =========\n%s"
                      "=======================", data)
     except:
@@ -77,9 +76,8 @@ def dump_mcu_build():
     # Try to log last mcu build version
     dump_file_stats(build_dir, 'out/klipper.dict')
     try:
-        f = open(os.path.join(build_dir, 'out/klipper.dict'), 'r')
-        data = f.read(32*1024)
-        f.close()
+        with open(os.path.join(build_dir, 'out/klipper.dict'), 'r') as f:
+            data = f.read(32*1024)
         data = json.loads(data)
         logging.info("Last MCU build version: %s", data.get('version', ''))
         logging.info("Last MCU build tools: %s", data.get('build_versions', ''))

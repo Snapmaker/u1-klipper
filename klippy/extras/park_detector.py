@@ -85,11 +85,11 @@ class ParkDetector:
         return state
 
     def get_park_detector_adc_value(self):
-        if self.park_adc_button is not None:
+        if self.park_adc_button is not None and getattr(self.park_adc_button, 'last_adc_value', None) is not None:
             self.gcode.respond_info("{} park_adc {:.3f}v".format(self.name, self.park_adc_button.last_adc_value*3.3))
-        if self.active_adc_button is not None:
+        if self.active_adc_button is not None and getattr(self.active_adc_button, 'last_adc_value', None) is not None:
             self.gcode.respond_info("{} active_adc {:.3f}v".format(self.name, self.active_adc_button.last_adc_value*3.3))
-        if self.grab_valid_adc_button is not None:
+        if self.grab_valid_adc_button is not None and getattr(self.grab_valid_adc_button, 'last_adc_value', None) is not None:
             self.gcode.respond_info("{} grab_valid_adc {:.3f}v".format(self.name, self.grab_valid_adc_button.last_adc_value*3.3))
 
 def load_config_prefix(config):

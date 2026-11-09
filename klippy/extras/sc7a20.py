@@ -84,7 +84,12 @@ class SC7A20:
 
     def read_reg(self, reg):
         params = self.spi.spi_transfer([reg | REG_MOD_READ, 0x00])
-        response = bytearray(params['response'])
+        response = bytearray(params.get('response', b''))
+        if len(response) < 2:
+            msg = ("Failed to read SC7A20 register [0x%x]: response too short (%d bytes)" % (
+                reg, len(response)))
+            err_msg = '{"coded": "0003-0522-0000-0009", "oneshot": 1, "msg":"%s"}' % msg
+            raise self.printer.command_error(err_msg)
         return response[1]
 
     def set_reg(self, reg, val, minclock=0):

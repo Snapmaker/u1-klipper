@@ -1,0 +1,7 @@
+# Test case for BUG-NULL-06: NoneType check in MOVE_TO_XY_IDLE_POSITION_EXTRUDER
+CONFIG bug_null06_extruder.cfg
+DICTIONARY simulator.dict
+SHOULD_FAIL
+
+# Attempt idle move without homing or configured park position
+MOVE_TO_XY_IDLE_POSITION_EXTRUDER

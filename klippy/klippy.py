@@ -276,10 +276,11 @@ class Printer:
                         structured_code = coded_message.get("coded", None)
                         if structured_code is not None:
                             parsed_structured_code = exception_manager._parse_structured_code(structured_code)
-                            id = parsed_structured_code.get("id", id)
-                            index = parsed_structured_code.get("index", index)
-                            code = parsed_structured_code.get("code", code)
-                            level = parsed_structured_code.get("level", level)
+                            if parsed_structured_code is not None:
+                                id = parsed_structured_code.get("id", id)
+                                index = parsed_structured_code.get("index", index)
+                                code = parsed_structured_code.get("code", code)
+                                level = parsed_structured_code.get("level", level)
                         else:
                             id = coded_message.get("id", id)
                             index = coded_message.get("index", index)

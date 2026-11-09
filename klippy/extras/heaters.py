@@ -477,25 +477,31 @@ class ControlPID:
         if profile not in self.pid_profiles:
             raise self.heater.printer.command_error(
                 "Unknown PID profile: %s" % (profile,))
-        self.current_profile = profile
-        gcode = self.heater.printer.lookup_object('gcode', None)
-        if gcode is not None:
-            gcode.respond_info("set pid profile: {}\n{}".format(profile, self.pid_profiles[profile]))
-        self.Kp = self.pid_profiles[profile]['Kp']
-        self.Ki = self.pid_profiles[profile]['Ki']
-        self.Kd = self.pid_profiles[profile]['Kd']
-        self.full_power_threshold = self.pid_profiles[self.current_profile]['full_power_threshold']
-        self.zero_power_threshold = self.pid_profiles[self.current_profile]['zero_power_threshold']
-        self.settle_delta = self.pid_profiles[self.current_profile]['settle_delta']
-        self.settle_slope = self.pid_profiles[self.current_profile]['settle_slope']
-        # Reset PID state when switching profiles
-        self.prev_temp = AMBIENT_TEMP
-        self.prev_temp_time = 0.
-        self.prev_temp_deriv = 0.
-        self.prev_temp_integ = 0.
-        self.temp_integ_max = 0.
-        if self.Ki:
-            self.temp_integ_max = self.heater_max_power / self.Ki
+        with self.heater.lock:
+            self.current_profile = profile
+            gcode = self.heater.printer.lookup_object('gcode', None)
+            if gcode is not None:
+                gcode.respond_info("set pid profile: {}\n{}".format(
+                    profile, self.pid_profiles[profile]))
+            self.Kp = self.pid_profiles[profile]['Kp']
+            self.Ki = self.pid_profiles[profile]['Ki']
+            self.Kd = self.pid_profiles[profile]['Kd']
+            self.full_power_threshold = self.pid_profiles[
+                self.current_profile]['full_power_threshold']
+            self.zero_power_threshold = self.pid_profiles[
+                self.current_profile]['zero_power_threshold']
+            self.settle_delta = self.pid_profiles[
+                self.current_profile]['settle_delta']
+            self.settle_slope = self.pid_profiles[
+                self.current_profile]['settle_slope']
+            # Reset PID state when switching profiles
+            self.prev_temp = AMBIENT_TEMP
+            self.prev_temp_time = 0.
+            self.prev_temp_deriv = 0.
+            self.prev_temp_integ = 0.
+            self.temp_integ_max = 0.
+            if self.Ki:
+                self.temp_integ_max = self.heater_max_power / self.Ki
 
 
 ######################################################################

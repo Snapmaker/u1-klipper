@@ -1,0 +1,8 @@
+# Test case for BUG-SEC-02: BED_MESH_OUTPUT_FILE path traversal
+CONFIG bug_sec02_bed_mesh.cfg
+DICTIONARY simulator.dict
+SHOULD_FAIL
+
+# Attempt path traversal via FILE parameter
+BED_MESH_OUTPUT_FILE FILE=../../evil_output.txt
+

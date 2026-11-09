@@ -1,0 +1,8 @@
+# Test case for BUG-LEAK-07: Flow calculator FIFO handling & error checks
+CONFIG bug_leak07_flow_calibrator.cfg
+DICTIONARY simulator.dict
+SHOULD_FAIL
+
+# Attempt checking flow calculator when FIFOs do not exist
+FLOW_CALCULATOR_CHECK
+

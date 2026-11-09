@@ -1,0 +1,8 @@
+# Test case for BUG-DIV-07: Division by Zero in flow_calibrator linear fitting
+CONFIG bug_div07_flow_calibrator.cfg
+DICTIONARY simulator.dict
+SHOULD_FAIL
+
+# Attempt zero crossing calculation with identical area values (slope == 0.0)
+FLOW_CALIBRATE_FIT K1=0.01 A1=5.0 K2=0.02 A2=5.0
+

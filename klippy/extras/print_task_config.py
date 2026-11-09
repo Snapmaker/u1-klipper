@@ -687,7 +687,7 @@ class PrintTaskConfig:
                     dest_filament_color_rgba = f'{red:02X}' + f'{green:02X}' + f'{blue:02X}' + f'{alpha:02X}'
                     dest_filament_color_multi['nums'] = 1
                     dest_filament_color_multi['alpha'] = alpha
-                    dest_filament_color_multi['colors'] = [dest_filament_color_rgba]
+                    dest_filament_color_multi['colors'] = [dest_filament_color_rgba[0:6]]
                     dest_filament_color_multi['mode'] = 0
                     dest_filament_color = filament_color
 
@@ -747,8 +747,8 @@ class PrintTaskConfig:
                 tmp_print_task_config['reprint_info']['flow_calibrate'] = bool(flow_calibrate)
 
             if flow_calibrate_extruders is not None:
-                tmp_print_task_config['flow_calibrate_extruders'] = [True for i in range(PHYSICAL_EXTRUDER_NUM)]
-                tmp_print_task_config['reprint_info'].update({'flow_calibrate_extruders': [True for i in range(PHYSICAL_EXTRUDER_NUM)]})
+                tmp_print_task_config['flow_calib_extruders'] = [True for i in range(PHYSICAL_EXTRUDER_NUM)]
+                tmp_print_task_config['reprint_info'].update({'flow_calib_extruders': [True for i in range(PHYSICAL_EXTRUDER_NUM)]})
                 calib_extruders = [int(value) for value in flow_calibrate_extruders.split(',')]
                 for i in range(PHYSICAL_EXTRUDER_NUM):
                     if i in calib_extruders:
@@ -832,8 +832,11 @@ class PrintTaskConfig:
                 tmp_reprint_info.update({'extruders_used': [False] * PHYSICAL_EXTRUDER_NUM})
                 used_extruders = [int(value) for value in extruders_str.split(',')]
                 for i in range(min(len(used_extruders), LOGICAL_EXTRUDER_NUM)):
-                    tmp_extruders_used[used_extruders[i]] = True
-                    tmp_reprint_info['extruders_used'][used_extruders[i]] = True
+                    idx = used_extruders[i]
+                    if not (0 <= idx < PHYSICAL_EXTRUDER_NUM):
+                        raise gcmd.error(f"[print_task_config] Invalid extruder index: {idx}")
+                    tmp_extruders_used[idx] = True
+                    tmp_reprint_info['extruders_used'][idx] = True
 
                 self.print_task_config['extruders_used'] = tmp_extruders_used
                 self.print_task_config['reprint_info'] = tmp_reprint_info
@@ -1189,7 +1192,8 @@ class PrintTaskConfig:
                     else:
                         if not isinstance(map_table_list[i][0], int) or not isinstance(map_table_list[i][1], int):
                             raise gcmd.error("[print_task_config] Invalid MAP_TABLE")
-                        if map_table_list[i][0] >= LOGICAL_EXTRUDER_NUM or map_table_list[i][1] >= PHYSICAL_EXTRUDER_NUM:
+                        if not (0 <= map_table_list[i][0] < LOGICAL_EXTRUDER_NUM and
+                                0 <= map_table_list[i][1] < PHYSICAL_EXTRUDER_NUM):
                             raise gcmd.error("[print_task_config] Invalid MAP_TABLE")
 
                     tmp_print_task_config['extruder_map_table'][map_table_list[i][0]] = map_table_list[i][1]
@@ -1213,7 +1217,7 @@ class PrintTaskConfig:
                 for i in range(len(flow_calibrate_extruders_list)):
                     if not isinstance(flow_calibrate_extruders_list[i], int):
                         raise gcmd.error("[print_task_config] Invalid FLOW_CALIBRATE_EXTRUDERS")
-                    if flow_calibrate_extruders_list[i] >= PHYSICAL_EXTRUDER_NUM:
+                    if not (0 <= flow_calibrate_extruders_list[i] < PHYSICAL_EXTRUDER_NUM):
                         raise gcmd.error("[print_task_config] Invalid FLOW_CALIBRATE_EXTRUDERS")
                     tmp_print_task_config['flow_calib_extruders'][flow_calibrate_extruders_list[i]] = True
             if time_lapse_camera is not None:
@@ -1416,10 +1420,12 @@ class PrintTaskConfig:
             if nozzle_diameter is not None:
                 for i in range(PHYSICAL_EXTRUDER_NUM):
                     if tmp_print_task_config['extruders_used'][i]:
-                        if abs(tmp_print_task_config_2['nozzle_diameter'][0] - actual_nozzle_diameter[i]) > 0.001:
-                            exception_code = 14
-                            raise gcmd.error(f"[print_task_config] nozzle diameter mismatch:" +
-                                                f"f{i}_{tmp_print_task_config_2['nozzle_diameter'][0]} != e{i}_{actual_nozzle_diameter[i]}")
+                        if (i < len(tmp_print_task_config_2['nozzle_diameter']) and
+                                tmp_print_task_config_2['nozzle_diameter'][i] is not None):
+                            if abs(tmp_print_task_config_2['nozzle_diameter'][i] - actual_nozzle_diameter[i]) > 0.001:
+                                exception_code = 14
+                                raise gcmd.error(f"[print_task_config] nozzle diameter mismatch:" +
+                                                    f"f{i}_{tmp_print_task_config_2['nozzle_diameter'][i]} != e{i}_{actual_nozzle_diameter[i]}")
 
             # check filament volume type
             if filament_volume_type is not None:

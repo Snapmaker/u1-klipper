@@ -1,0 +1,6 @@
+# Test case for BUG-DEAD-04: abort_probe lock inversion
+CONFIG bug_dead04_bed_mesh.cfg
+DICTIONARY simulator.dict
+
+BED_MESH_CLEAR
+

@@ -1,0 +1,8 @@
+# Test case for BUG-SEC-04: Path Traversal in flow_calibrator AXIS
+CONFIG bug_sec04_flow_calibrator.cfg
+DICTIONARY simulator.dict
+SHOULD_FAIL
+
+# Attempt path traversal via AXIS parameter in ACCEL_TIME_MEASURE
+ACCEL_TIME_MEASURE AXIS=../../evil_path
+

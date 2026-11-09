@@ -27,7 +27,7 @@ typedef struct {
   uint32_t bufferSize;
   uint32_t head;
   uint32_t count;
-  uint32_t sum;
+  uint64_t sum;
 } MOVING_SUM;
 
 struct freq_cal_info {
@@ -39,7 +39,7 @@ struct freq_cal_info {
   uint32_t trg_freq_lt;
   volatile uint32_t cmp_trg_cnt_ht;
   volatile uint32_t cmp_trg_cnt_lt;
-  volatile uint32_t capture_pulse_sum;
+  volatile uint64_t capture_pulse_sum;
   volatile uint32_t update_cnt;
   double freq_cal_cycle;
   double freq_cal_timeout_cycle;
@@ -125,8 +125,8 @@ void reset_buffer(MOVING_SUM *ms) {
   ms->sum = 0;
 }
 
-uint32_t get_sum(MOVING_SUM *ms) {
-  if (ms->count + 1 < ms->bufferSize || ms->bufferSize == 0)
+uint64_t get_sum(MOVING_SUM *ms) {
+  if (ms->bufferSize == 0 || ms->count < ms->bufferSize)
     return 0;
   return ms->sum;
 }
@@ -267,6 +267,7 @@ inductance_coil_crm_tmr_init(struct freq_cal_info *info)
   uint32_t tmp_pr_value = 0;
 
   // turn off the timer.
+  NVIC_DisableIRQ(INPUT_CAPTURE_CAL_IRQn);
   tmr_counter_enable(INPUT_CAPTURE_CRM_TIM, FALSE);
   tmr_counter_enable(INPUT_CAPTURE_CAL_CRM_TIM, FALSE);
   tmr_interrupt_enable(INPUT_CAPTURE_CAL_CRM_TIM, TMR_OVF_INT | TMR_C1_INT, FALSE);
@@ -276,6 +277,7 @@ inductance_coil_crm_tmr_init(struct freq_cal_info *info)
   INPUT_CAPTURE_CAL_CRM_TIM->ists &= 0;
 
   // cal info init
+  irqstatus_t irq_flags = irq_save();
   g_freq_cal_info.capture_pulse_sum = 0;
   g_freq_cal_info.need_capture_pulse_sum = info->need_capture_pulse_sum;
   g_freq_cal_info.freq_cal_cycle = info->freq_cal_cycle;
@@ -291,16 +293,20 @@ inductance_coil_crm_tmr_init(struct freq_cal_info *info)
   g_freq_cal_info.cal_capture_pulse_window_size = info->cal_capture_pulse_window_size;
 
   init_moving_sum(&g_freq_cal_info.moving_sum, g_freq_cal_info.cal_capture_pulse_window_size);
-  if (g_freq_cal_info.trigger_mode == 1 && g_freq_cal_info.freq_cal_mode == FIXED_TIME_CAL_MODE)
+  if (g_freq_cal_info.trigger_mode == 1 && g_freq_cal_info.freq_cal_mode == FIXED_TIME_CAL_MODE) {
+    irq_restore(irq_flags);
     shutdown("fixed time cal mode cannot set bidirectional trigger!!!");
+  }
 
   if (g_freq_cal_info.freq_cal_mode == FIXED_TIME_CAL_MODE) {
     g_freq_cal_info.cmp_trg_cnt_ht = g_freq_cal_info.trg_freq_ht * g_freq_cal_info.freq_cal_cycle * g_freq_cal_info.cal_capture_pulse_window_size;
     g_freq_cal_info.cmp_trg_cnt_lt = g_freq_cal_info.trg_freq_lt * g_freq_cal_info.freq_cal_cycle * g_freq_cal_info.cal_capture_pulse_window_size;
   }
   else {
-    if (g_freq_cal_info.trigger_mode == 1 && (g_freq_cal_info.trg_freq_ht < g_freq_cal_info.trg_freq_lt))
+    if (g_freq_cal_info.trigger_mode == 1 && (g_freq_cal_info.trg_freq_ht < g_freq_cal_info.trg_freq_lt)) {
+      irq_restore(irq_flags);
       shutdown("trg freq ht is smaller than trg freq lt!!!");
+    }
 
     if (g_freq_cal_info.trg_freq_ht) {
       g_freq_cal_info.cmp_trg_cnt_ht = ((double)INPUT_CAPTURE_CAL_CRM_TIM_CLOCK_FREQ /
@@ -318,6 +324,7 @@ inductance_coil_crm_tmr_init(struct freq_cal_info *info)
       g_freq_cal_info.cmp_trg_cnt_lt = 0;
     }
   }
+  irq_restore(irq_flags);
 
   // expanded to 32-bit timer
   tmr_input_config_type  tmr_input_config_struct;
@@ -325,14 +332,18 @@ inductance_coil_crm_tmr_init(struct freq_cal_info *info)
   tmr_32_bit_function_enable(INPUT_CAPTURE_CAL_CRM_TIM, TRUE);
 
   if (g_freq_cal_info.freq_cal_mode == FIXED_TIME_CAL_MODE) {
-    tmp_pr_value = INPUT_CAPTURE_CAL_CRM_TIM_PR(g_freq_cal_info.freq_cal_cycle);
-    if (tmp_pr_value > INPUT_CAPTURE_CAL_CRM_TIM_MAX_PR_VALUE) {
+    double calc_pr = INPUT_CAPTURE_CAL_CRM_TIM_PR(g_freq_cal_info.freq_cal_cycle);
+    if (calc_pr < 0.0 || calc_pr > (double)INPUT_CAPTURE_CAL_CRM_TIM_MAX_PR_VALUE) {
       shutdown("input capture calculation cycle is too long!!!");
     }
+    tmp_pr_value = (uint32_t)calc_pr;
     tmr_base_init(INPUT_CAPTURE_CAL_CRM_TIM, tmp_pr_value, INPUT_CAPTURE_CAL_CRM_DIV -1);
     tmr_counter_value_set(INPUT_CAPTURE_CAL_CRM_TIM, 0);
     tmr_cnt_dir_set(INPUT_CAPTURE_CAL_CRM_TIM, TMR_COUNT_UP);
-     g_freq_cal_info.freq_cal_factor = 1 / (info->freq_cal_cycle * 1 * g_freq_cal_info.cal_capture_pulse_window_size);
+    if (info->freq_cal_cycle <= 0.0 || g_freq_cal_info.cal_capture_pulse_window_size == 0) {
+      shutdown("Invalid frequency calculation parameters!");
+    }
+    g_freq_cal_info.freq_cal_factor = 1.0 / (info->freq_cal_cycle * g_freq_cal_info.cal_capture_pulse_window_size);
 
     tmr_base_init(INPUT_CAPTURE_CRM_TIM, INPUT_CAPTURE_CRM_TIM_MAX_PR_VALUE, 0);
     tmr_counter_value_set(INPUT_CAPTURE_CRM_TIM, 0);
@@ -347,7 +358,11 @@ inductance_coil_crm_tmr_init(struct freq_cal_info *info)
     tmr_cnt_dir_set(INPUT_CAPTURE_CRM_TIM, TMR_COUNT_UP);
 
     g_freq_cal_info.freq_cal_factor = g_freq_cal_info.need_capture_pulse_sum * g_freq_cal_info.cal_capture_pulse_window_size;
-    tmp_pr_value = INPUT_CAPTURE_CAL_CRM_TIM_PR(g_freq_cal_info.freq_cal_timeout_cycle);
+    double timeout_pr = INPUT_CAPTURE_CAL_CRM_TIM_PR(g_freq_cal_info.freq_cal_timeout_cycle);
+    if (timeout_pr < 0.0 || timeout_pr > (double)INPUT_CAPTURE_CAL_CRM_TIM_MAX_PR_VALUE) {
+      shutdown("input capture timeout cycle is invalid!!!");
+    }
+    tmp_pr_value = (uint32_t)timeout_pr;
     tmr_base_init(INPUT_CAPTURE_CAL_CRM_TIM, tmp_pr_value, INPUT_CAPTURE_CAL_CRM_DIV -1);
     tmr_counter_value_set(INPUT_CAPTURE_CAL_CRM_TIM, 0);
     tmr_cnt_dir_set(INPUT_CAPTURE_CAL_CRM_TIM, TMR_COUNT_UP);
@@ -395,18 +410,28 @@ uint8_t pulse_gpio_read(void)
   return g_freq_cal_info.virtual_gpio_state;
 }
 
-uint32_t frequency_conversion(uint32_t tick)
+uint32_t frequency_conversion(uint64_t tick)
 {
   uint32_t freq = 0;
   if (tick) {
     if (g_freq_cal_info.freq_cal_mode == FIXED_TIME_CAL_MODE) {
-      freq = (uint32_t)(tick * g_freq_cal_info.freq_cal_factor);
+      double f = (double)tick * g_freq_cal_info.freq_cal_factor;
+      if (f > (double)UINT32_MAX)
+        freq = UINT32_MAX;
+      else
+        freq = (uint32_t)f;
     }
     else {
       double single_pulse_tick = 0;
-      single_pulse_tick = (double)(tick + INPUT_CAPTURE_CAL_COMPENSATION_TICK) / g_freq_cal_info.freq_cal_factor;
-      if (single_pulse_tick)
-        freq = (uint32_t)(CONFIG_CLOCK_FREQ / single_pulse_tick);
+      if (g_freq_cal_info.freq_cal_factor > 0)
+        single_pulse_tick = (double)(tick + INPUT_CAPTURE_CAL_COMPENSATION_TICK) / g_freq_cal_info.freq_cal_factor;
+      if (single_pulse_tick > 0.0) {
+        double f = (double)CONFIG_CLOCK_FREQ / single_pulse_tick;
+        if (f > (double)UINT32_MAX)
+          freq = UINT32_MAX;
+        else
+          freq = (uint32_t)f;
+      }
     }
   }
   return freq;
@@ -427,14 +452,18 @@ inductance_coil_event(struct timer *t)
 void
 command_inductance_coil_config(uint32_t *args)
 {
-  // TODO: currently can only one device exist!!!
-
-  if (inductance_coil_oid_malloc /*&& args[0] != oid */)
+  uint8_t count = 0, existing_oid;
+  struct inductance_coil_dev *existing_dev;
+  foreach_oid(existing_oid, existing_dev, command_inductance_coil_config) {
+    count++;
+  }
+  if (count > 0)
     shutdown("currently only one input_capture resource is supported");
 
   struct inductance_coil_dev *dev = oid_alloc(args[0], command_inductance_coil_config, sizeof(*dev));
 
   inductance_coil_oid_malloc = args[0];
+  irqstatus_t irq_flags = irq_save();
   dev->cal_info.freq_cal_mode = args[1];
   dev->cal_info.need_capture_pulse_sum = args[2];
   dev->cal_info.freq_cal_cycle = (double)args[3] / 1000000;
@@ -444,6 +473,7 @@ command_inductance_coil_config(uint32_t *args)
   dev->cal_info.trg_freq_ht = args[7];
   dev->cal_info.trg_freq_lt = args[8];
   dev->cal_info.cal_capture_pulse_window_size = args[9];
+  irq_restore(irq_flags);
 
   // initialize peripherals
   inductance_coil_dev_init(&dev->cal_info);
@@ -458,35 +488,43 @@ static void
 update_trigger_frequencies(struct timer_config_freq_param freq_param)
 {
   struct inductance_coil_dev *d = oid_lookup(freq_param.oid, command_inductance_coil_config);
+  irqstatus_t irq_flags = irq_save();
   if (freq_param.absolute_mode) {
     if (freq_param.trg_freq_ht < 0) freq_param.trg_freq_ht = 0;
     if (freq_param.trg_freq_lt < 0) freq_param.trg_freq_lt = 0;
-    d->cal_info.trg_freq_ht = freq_param.trg_freq_ht;
-    d->cal_info.trg_freq_lt = freq_param.trg_freq_lt;
+    d->cal_info.trg_freq_ht = (uint32_t)freq_param.trg_freq_ht;
+    d->cal_info.trg_freq_lt = (uint32_t)freq_param.trg_freq_lt;
   }
   else {
-    uint32_t capture_sum = g_freq_cal_info.capture_pulse_sum;
+    uint64_t capture_sum = g_freq_cal_info.capture_pulse_sum;
     uint32_t cur_freq = frequency_conversion(capture_sum);
 
-    if (freq_param.trg_freq_ht + (int)cur_freq < 0)
+    int64_t calc_ht = (int64_t)freq_param.trg_freq_ht + (int64_t)cur_freq;
+    if (calc_ht < 0)
       d->cal_info.trg_freq_ht = 0;
+    else if (calc_ht > (int64_t)UINT32_MAX)
+      d->cal_info.trg_freq_ht = UINT32_MAX;
     else
-      d->cal_info.trg_freq_ht = freq_param.trg_freq_ht + cur_freq;
+      d->cal_info.trg_freq_ht = (uint32_t)calc_ht;
 
-    if (freq_param.trg_freq_lt + (int)cur_freq < 0)
+    int64_t calc_lt = (int64_t)freq_param.trg_freq_lt + (int64_t)cur_freq;
+    if (calc_lt < 0)
       d->cal_info.trg_freq_lt = 0;
+    else if (calc_lt > (int64_t)UINT32_MAX)
+      d->cal_info.trg_freq_lt = UINT32_MAX;
     else
-      d->cal_info.trg_freq_lt = freq_param.trg_freq_lt + cur_freq;
+      d->cal_info.trg_freq_lt = (uint32_t)calc_lt;
   }
 
-  if (freq_param.trigger_mode == 1 && (d->cal_info.trg_freq_ht < d->cal_info.trg_freq_lt))
+  if (freq_param.trigger_mode == 1 && (d->cal_info.trg_freq_ht < d->cal_info.trg_freq_lt)) {
+    irq_restore(irq_flags);
     shutdown("Bidirectional Trigger mode trg_freq_ht is smaller than trg_freq_lt!!!");
+  }
 
   d->cal_info.trigger_mode = freq_param.trigger_mode;
   d->cal_info.trigger_invert = freq_param.trigger_invert;
 
   if (freq_param.force_update) {
-    irqstatus_t irq_flags = irq_save();
     g_freq_cal_info.trg_freq_ht = d->cal_info.trg_freq_ht;
     g_freq_cal_info.trg_freq_lt = d->cal_info.trg_freq_lt;
 
@@ -513,7 +551,8 @@ update_trigger_frequencies(struct timer_config_freq_param freq_param)
     }
     g_freq_cal_info.trigger_invert = d->cal_info.trigger_invert;
     g_freq_cal_info.trigger_mode = d->cal_info.trigger_mode;
-    irq_restore(irq_flags);
+  }
+  irq_restore(irq_flags);
   }
 }
 
@@ -620,13 +659,13 @@ command_query_inductance_coil_status(uint32_t *args)
 DECL_COMMAND(command_query_inductance_coil_status, "query_inductance_coil_status oid=%c");
 
 static void
-inductance_coil_query(struct inductance_coil_dev *icd, uint32_t capture_sum, uint8_t oid)
+inductance_coil_query(struct inductance_coil_dev *icd, uint64_t capture_sum, uint8_t oid)
 {
   uint32_t cal_freq = 0;
   cal_freq = frequency_conversion(capture_sum);
 
   uint8_t *d = &icd->sb.data[icd->sb.data_count];
-  *(uint32_t *)d = cal_freq;
+  memcpy(d, &cal_freq, sizeof(cal_freq));
   icd->sb.data_count += BYTES_PER_SAMPLE;
 
   // check whether the buffer cannot eat next one sample
@@ -666,9 +705,16 @@ inductance_coil_shutdown(void)
 {
   uint8_t i;
   struct inductance_coil_dev *d;
-  // Todo: additional specific shutdown handling
   foreach_oid(i, d, command_inductance_coil_config) {
     sched_del_timer(&d->timer);
+    sched_del_timer(&d->config_freq_timer);
   }
+#if CONFIG_MACH_AT32F4x
+  tmr_interrupt_enable(INPUT_CAPTURE_CAL_CRM_TIM, TMR_OVF_INT | TMR_C1_INT, FALSE);
+  tmr_counter_enable(INPUT_CAPTURE_CAL_CRM_TIM, FALSE);
+  tmr_counter_enable(INPUT_CAPTURE_CRM_TIM, FALSE);
+  NVIC_DisableIRQ(INPUT_CAPTURE_CAL_IRQn);
+#endif
+  inductance_coil_oid_malloc = 0;
 }
 DECL_SHUTDOWN(inductance_coil_shutdown);

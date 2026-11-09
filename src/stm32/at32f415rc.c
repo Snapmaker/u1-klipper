@@ -17,7 +17,10 @@
 void at32f415_log(char* log)
 {
   while (log && *log) {
-    while(usart_flag_get(PRINT_UART, USART_TDBE_FLAG) == RESET);
+    uint32_t timeout = 100000;
+    while(usart_flag_get(PRINT_UART, USART_TDBE_FLAG) == RESET && --timeout);
+    if (!timeout)
+      break;
     usart_data_transmit(PRINT_UART, (uint16_t)(*log));
     log++;
   }

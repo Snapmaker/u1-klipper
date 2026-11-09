@@ -152,8 +152,8 @@ can_process_query_unassigned(struct canbus_msg *msg)
     send.data[0] = CANBUS_RESP_NEED_NODEID;
     memcpy(&send.data[1], CanData.uuid, sizeof(CanData.uuid));
     send.data[7] = CANBUS_CMD_SET_KLIPPER_NODEID;
-    // Send with retry
-    for (;;) {
+    // Send with retry (limited attempts to avoid infinite stall)
+    for (int retry = 0; retry < 10000; retry++) {
         int ret = canbus_send(&send);
         if (ret >= 0)
             return;
