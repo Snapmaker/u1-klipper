@@ -55,6 +55,7 @@ class ExcludeObject:
             self.last_position_e = {}
             self.last_position_e_extruded = {}
             self.last_position_e_excluded = {}
+            self.last_tx_position = None
 
             self.get_position()
             self.last_position_extruded[:] = self.last_position
@@ -151,6 +152,14 @@ class ExcludeObject:
     def get_position(self):
         offset = self._get_extrusion_offsets()
         pos = self.next_transform.get_position()
+        if self.last_tx_position is None or any(
+                abs(pos[i] - self.last_tx_position[i]) > 1e-6 for i in range(3)):
+            # The head is not where this transform last sent it (a manual_move
+            # park, homing, a tool change): the skipped-object XYZ offset no
+            # longer describes where it is, so restart from the real position.
+            offset[0] = offset[1] = offset[2] = 0.
+            self.last_position_extruded[:3] = pos[:3]
+            self.last_tx_position = pos[:3]
         self._get_last_position_e()
         for i in range(4):
             self.last_position[i] = pos[i] + offset[i]
@@ -184,6 +193,7 @@ class ExcludeObject:
         # Ideally, there will be Z and E moves right away to adjust any offsets
         # before moving away from the last position.  Any remaining corrections
         # will be made on the firs XY move.
+        left_skipped_xy = False
         if (offset[0] != 0 or offset[1] != 0) and \
             (newpos[0] != self.last_position_excluded[0] or \
             newpos[1] != self.last_position_excluded[1]):
@@ -192,6 +202,7 @@ class ExcludeObject:
             offset[2] = 0
             offset[3] += self.extruder_adj
             self.extruder_adj = 0
+            left_skipped_xy = True
 
         if offset[2] != 0 and newpos[2] != self.last_position_excluded[2]:
             offset[2] = 0
@@ -204,7 +215,16 @@ class ExcludeObject:
         tx_pos = newpos[:]
         for i in range(4):
             tx_pos[i] = newpos[i] - offset[i]
+        if left_skipped_xy and self.last_tx_position is not None \
+                and tx_pos[2] > self.last_tx_position[2]:
+            # The slicer planned this lift from the skipped object's last
+            # point; the head is at the last printed one. Lift there first, so
+            # the travel does not ramp up across finished parts.
+            self.next_transform.move(
+                self.last_tx_position[:2] + [tx_pos[2],
+                self.next_transform.get_position()[3]], speed)
         self.next_transform.move(tx_pos, speed)
+        self.last_tx_position = tx_pos[:3]
 
     def _ignore_move(self, newpos, speed):
         offset = self._get_extrusion_offsets()
