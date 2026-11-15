@@ -1419,7 +1419,7 @@ class PrintTaskConfig:
             # entry for (single-value files) keeps using the first entry
             if nozzle_diameter is not None:
                 for i in range(LOGICAL_EXTRUDER_NUM):
-                    if tmp_print_task_config_2['filament_used_g'][i] < 0.0001 and tmp_print_task_config_2['filament_used_mm'][i] < 0.0001:
+                    if not (tmp_print_task_config_2['filament_used_g'][i] > 0.0001 or tmp_print_task_config_2['filament_used_mm'][i] > 0.0001):
                         continue
                     map_e = tmp_print_task_config['extruder_map_table'][i]
                     file_diameter = tmp_print_task_config_2['nozzle_diameter'][i if i < nozzle_diameter_count else 0]
