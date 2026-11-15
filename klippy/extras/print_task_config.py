@@ -1255,6 +1255,7 @@ class PrintTaskConfig:
                 logging.exception(e)
                 tmp_print_task_config_2['filament_type'] = [None for i in range(LOGICAL_EXTRUDER_NUM)]
 
+            nozzle_diameter_count = 0
             try:
                 if nozzle_diameter is not None:
                     nozzle_diameter_list  = self._parse_str_to_list(nozzle_diameter)
@@ -1266,6 +1267,7 @@ class PrintTaskConfig:
                         if not isinstance(nozzle_diameter_list[i], float):
                             raise gcmd.error("[print_task_config] Invalid NOZZLE_DIAMETER")
                         tmp_print_task_config_2['nozzle_diameter'][i] = float(nozzle_diameter_list[i])
+                    nozzle_diameter_count = len(nozzle_diameter_list)
             except Exception as e:
                 logging.exception(e)
                 tmp_print_task_config_2['nozzle_diameter'] = [0 for i in range(LOGICAL_EXTRUDER_NUM)]
@@ -1413,13 +1415,18 @@ class PrintTaskConfig:
                     tmp_print_task_config['extruders_used'][tmp_print_task_config['extruder_map_table'][i]] = True
 
             # check nozzle diameter
+            # each used file tool against the head it is mapped to; a tool the file has no
+            # entry for (single-value files) keeps using the first entry
             if nozzle_diameter is not None:
-                for i in range(PHYSICAL_EXTRUDER_NUM):
-                    if tmp_print_task_config['extruders_used'][i]:
-                        if abs(tmp_print_task_config_2['nozzle_diameter'][0] - actual_nozzle_diameter[i]) > 0.001:
-                            exception_code = 14
-                            raise gcmd.error(f"[print_task_config] nozzle diameter mismatch:" +
-                                                f"f{i}_{tmp_print_task_config_2['nozzle_diameter'][0]} != e{i}_{actual_nozzle_diameter[i]}")
+                for i in range(LOGICAL_EXTRUDER_NUM):
+                    if tmp_print_task_config_2['filament_used_g'][i] < 0.0001 and tmp_print_task_config_2['filament_used_mm'][i] < 0.0001:
+                        continue
+                    map_e = tmp_print_task_config['extruder_map_table'][i]
+                    file_diameter = tmp_print_task_config_2['nozzle_diameter'][i if i < nozzle_diameter_count else 0]
+                    if abs(file_diameter - actual_nozzle_diameter[map_e]) > 0.001:
+                        exception_code = 14
+                        raise gcmd.error(f"[print_task_config] nozzle diameter mismatch:" +
+                                            f"f{i}_{file_diameter} != e{map_e}_{actual_nozzle_diameter[map_e]}")
 
             # check filament volume type
             if filament_volume_type is not None:
