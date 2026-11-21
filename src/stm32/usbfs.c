@@ -438,3 +438,12 @@ usb_init(void)
     armcm_enable_irq(USB_IRQHandler, USBx_IRQn, 1);
 }
 DECL_INIT(usb_init);
+
+// Satisfy vendor-specific call from src/generic/usb_cdc.c
+// stubbed to allow STM MCUs that don't support USB HAL to compile for Snapmaker U1
+void
+usb_clear_stall(uint32_t ep, int is_in)
+{
+    (void)ep;
+    (void)is_in;
+}
