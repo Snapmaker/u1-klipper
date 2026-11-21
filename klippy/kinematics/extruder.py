@@ -16,6 +16,9 @@ class ExtruderUnknownParkStatus(Exception):
 class ExtruderPickAbnormal(Exception):
     pass
 
+class ExtruderParkRetry(Exception):
+    pass
+
 PERIODIC_STATUS_CHECK_INTERVAL = 0.5
 DETECTION_ERROR_THRESHOLDS = {
     'park_detector_threshold': 10,
@@ -551,6 +554,7 @@ class PrinterExtruder:
 
         self.switch_accel = config.getfloat('switch_accel', 5000., above=0.)
         self.retry_switch_limit = config.getint('retry_switch_limit', 3, minval=0)
+        self.park_retry_limit = config.getint('park_retry_limit', 2, minval=0)
         # Binding print fan
         self.binding_fan = None
         fan = config.get("fan", None)
@@ -1563,65 +1567,86 @@ class PrinterExtruder:
                     x_move_position = cur_extruder.xy_park_position[0] + [1, -1][not cur_extruder.grab_dir] * \
                                     (cur_extruder.horizontal_move_x - cur_extruder.retract_x_dist)
                     gcmd.respond_info("park {} !!!".format(cur_extruder.name))
-                    pos = toolhead.get_position()
-                    if pos[1] > cur_extruder.y_idle_position:
-                        toolhead.manual_move([None, cur_extruder.y_idle_position, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.y_idle_position, cur_extruder.fast_move_speed*60))
+                    # A park can leave the extruder latched to the carriage (state FTT,
+                    # "failed to return to park position"). Repeating the park sequence
+                    # normally releases it, so retry before pausing the print. The final
+                    # retry re-homes XY first, matching the manual recovery path.
+                    park_attempt = 0
+                    while True:
+                        try:
+                            pos = toolhead.get_position()
+                            if pos[1] > cur_extruder.y_idle_position:
+                                toolhead.manual_move([None, cur_extruder.y_idle_position, None], cur_extruder.fast_move_speed)
+                                # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.y_idle_position, cur_extruder.fast_move_speed*60))
 
-                        toolhead.manual_move([x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, None, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 X{} F{}".format(x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, cur_extruder.fast_move_speed*60))
-                        toolhead.manual_move([x_move_position, None, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 X{} F{}".format(x_move_position,cur_extruder.fast_move_speed*60))
-                    else:
-                        toolhead.manual_move([x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, None, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 X{} F{}".format(x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, cur_extruder.fast_move_speed*60))
-                        toolhead.manual_move([x_move_position, None, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 X{} F{}".format(x_move_position, cur_extruder.fast_move_speed*60))
+                                toolhead.manual_move([x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, None, None], cur_extruder.fast_move_speed)
+                                # gcmd.respond_info("G0 X{} F{}".format(x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, cur_extruder.fast_move_speed*60))
+                                toolhead.manual_move([x_move_position, None, None], cur_extruder.fast_move_speed)
+                                # gcmd.respond_info("G0 X{} F{}".format(x_move_position,cur_extruder.fast_move_speed*60))
+                            else:
+                                toolhead.manual_move([x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, None, None], cur_extruder.fast_move_speed)
+                                # gcmd.respond_info("G0 X{} F{}".format(x_move_position + [1, -1][cur_extruder.grab_dir]*0.5, cur_extruder.fast_move_speed*60))
+                                toolhead.manual_move([x_move_position, None, None], cur_extruder.fast_move_speed)
+                                # gcmd.respond_info("G0 X{} F{}".format(x_move_position, cur_extruder.fast_move_speed*60))
 
-                        toolhead.manual_move([None, cur_extruder.y_idle_position, None], cur_extruder.fast_move_speed)
-                        # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.y_idle_position, cur_extruder.fast_move_speed*60))
+                                toolhead.manual_move([None, cur_extruder.y_idle_position, None], cur_extruder.fast_move_speed)
+                                # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.y_idle_position, cur_extruder.fast_move_speed*60))
 
-                    y_move_position = max(cur_extruder.xy_park_position[1] - cur_extruder.inser_buffer_dist, cur_extruder.y_idle_position)
-                    toolhead.manual_move([None, y_move_position, None], cur_extruder.fast_move_speed)
-                    # gcmd.respond_info("G0 Y{} F{}".format(y_move_position, cur_extruder.fast_move_speed*60))
-                    toolhead.manual_move([None, cur_extruder.xy_park_position[1], None], cur_extruder.slow_move_speed)
-                    # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.xy_park_position[1], cur_extruder.slow_move_speed*60))
+                            y_move_position = max(cur_extruder.xy_park_position[1] - cur_extruder.inser_buffer_dist, cur_extruder.y_idle_position)
+                            toolhead.manual_move([None, y_move_position, None], cur_extruder.fast_move_speed)
+                            # gcmd.respond_info("G0 Y{} F{}".format(y_move_position, cur_extruder.fast_move_speed*60))
+                            toolhead.manual_move([None, cur_extruder.xy_park_position[1], None], cur_extruder.slow_move_speed)
+                            # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.xy_park_position[1], cur_extruder.slow_move_speed*60))
 
-                    toolhead.manual_move([cur_extruder.xy_park_position[0], None, None], cur_extruder.slow_move_speed)
-                    # gcmd.respond_info("G0 X{} F{}".format(cur_extruder.xy_park_position[0], cur_extruder.slow_move_speed*60))
+                            toolhead.manual_move([cur_extruder.xy_park_position[0], None, None], cur_extruder.slow_move_speed)
+                            # gcmd.respond_info("G0 X{} F{}".format(cur_extruder.xy_park_position[0], cur_extruder.slow_move_speed*60))
 
-                    toolhead.manual_move([None, cur_extruder.y_idle_position, None], cur_extruder.fast_move_speed)
-                    # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.y_idle_position, cur_extruder.fast_move_speed*60))
-                    toolhead.wait_moves()
-                    # toolhead.dwell(0.1)
-                    for i in range(10):
-                        cur_extruder_state = cur_extruder.get_park_detector_status()
-                        if not (cur_extruder_state is not None and cur_extruder_state['state'] != 'PARKED'):
-                            break
-                        else:
-                            if i == 9:
-                                if cur_extruder_state is not None:
-                                    state, park_pin = cur_extruder_state['state'], cur_extruder_state['park_pin']
-                                    active_pin, grab_valid_pin = cur_extruder_state['active_pin'], cur_extruder_state['grab_valid_pin']
-                                    pin_sta = ''.join(['T' if x else 'F' for x in [park_pin, active_pin, grab_valid_pin]])
-                                    msg = f"Extruder {cur_extruder.name} malfunction after parking, state: {state} [{pin_sta}]"
-                                    message = '{"coded": "0002-0523-%4d-0020", "oneshot": %d, "msg":"%s", "action": "pause"}' % (cur_extruder.extruder_num, 0, msg)
-                                    if self.grab_hall_sensor_type:
-                                        if pin_sta == 'FTT' or pin_sta == 'FTF':
-                                            msg = f"Extruder {cur_extruder.name} malfunction after parking, {cur_extruder.name} failed to return to park position. state: {state} [{pin_sta}]"
-                                            message = '{"coded": "0002-0523-%4d-0042", "oneshot": %d, "msg":"%s", "action": "pause"}' % (cur_extruder.extruder_num, 0, msg)
-                                        elif pin_sta == 'FFT' or pin_sta == 'FFF':
-                                            msg = f"Extruder {cur_extruder.name} malfunction after parking, {cur_extruder.name} detached detected. state: {state} [{pin_sta}]"
-                                            message = '{"coded": "0002-0523-%4d-0043", "oneshot": %d, "msg":"%s", "action": "pause"}' % (cur_extruder.extruder_num, 0, msg)
-                                        elif pin_sta == 'TTT' or pin_sta == 'TTF':
-                                            msg = f"Extruder {cur_extruder.name} malfunction after parking, conflicting status detected: both parked and picked states. state: {state} [{pin_sta}]"
-                                            message = '{"coded": "0002-0523-%4d-0044", "oneshot": %d, "msg":"%s", "action": "pause"}' % (cur_extruder.extruder_num, 0, msg)
-                                    raise gcmd.error(message)
-                                else:
-                                    raise gcmd.error("Extruder malfunction after parking, {}: {}".format(cur_extruder.name, cur_extruder_state), 'pause')
-                            gcmd.respond_info(f"Post-park check failed for {cur_extruder.name}, retry {i}")
-                            toolhead.dwell(0.2)
+                            toolhead.manual_move([None, cur_extruder.y_idle_position, None], cur_extruder.fast_move_speed)
+                            # gcmd.respond_info("G0 Y{} F{}".format(cur_extruder.y_idle_position, cur_extruder.fast_move_speed*60))
                             toolhead.wait_moves()
+                            # toolhead.dwell(0.1)
+                            for i in range(10):
+                                cur_extruder_state = cur_extruder.get_park_detector_status()
+                                if not (cur_extruder_state is not None and cur_extruder_state['state'] != 'PARKED'):
+                                    break
+                                else:
+                                    if i == 9:
+                                        if cur_extruder_state is not None:
+                                            state, park_pin = cur_extruder_state['state'], cur_extruder_state['park_pin']
+                                            active_pin, grab_valid_pin = cur_extruder_state['active_pin'], cur_extruder_state['grab_valid_pin']
+                                            pin_sta = ''.join(['T' if x else 'F' for x in [park_pin, active_pin, grab_valid_pin]])
+                                            msg = f"Extruder {cur_extruder.name} malfunction after parking, state: {state} [{pin_sta}]"
+                                            message = '{"coded": "0002-0523-%4d-0020", "oneshot": %d, "msg":"%s", "action": "pause"}' % (cur_extruder.extruder_num, 0, msg)
+                                            if self.grab_hall_sensor_type:
+                                                if pin_sta == 'FTT' or pin_sta == 'FTF':
+                                                    msg = f"Extruder {cur_extruder.name} malfunction after parking, {cur_extruder.name} failed to return to park position. state: {state} [{pin_sta}]"
+                                                    message = '{"coded": "0002-0523-%4d-0042", "oneshot": %d, "msg":"%s", "action": "pause"}' % (cur_extruder.extruder_num, 0, msg)
+                                                elif pin_sta == 'FFT' or pin_sta == 'FFF':
+                                                    msg = f"Extruder {cur_extruder.name} malfunction after parking, {cur_extruder.name} detached detected. state: {state} [{pin_sta}]"
+                                                    message = '{"coded": "0002-0523-%4d-0043", "oneshot": %d, "msg":"%s", "action": "pause"}' % (cur_extruder.extruder_num, 0, msg)
+                                                elif pin_sta == 'TTT' or pin_sta == 'TTF':
+                                                    msg = f"Extruder {cur_extruder.name} malfunction after parking, conflicting status detected: both parked and picked states. state: {state} [{pin_sta}]"
+                                                    message = '{"coded": "0002-0523-%4d-0044", "oneshot": %d, "msg":"%s", "action": "pause"}' % (cur_extruder.extruder_num, 0, msg)
+                                            if pin_sta == 'FTT' and park_attempt < cur_extruder.park_retry_limit:
+                                                raise ExtruderParkRetry(msg)
+                                            raise gcmd.error(message)
+                                        else:
+                                            raise gcmd.error("Extruder malfunction after parking, {}: {}".format(cur_extruder.name, cur_extruder_state), 'pause')
+                                    gcmd.respond_info(f"Post-park check failed for {cur_extruder.name}, retry {i}")
+                                    toolhead.dwell(0.2)
+                                    toolhead.wait_moves()
+                            break
+                        except ExtruderParkRetry as e:
+                            park_attempt += 1
+                            logging.warning('Park retry %d/%d for %s: %s', park_attempt,
+                                            cur_extruder.park_retry_limit, cur_extruder.name, str(e))
+                            gcmd.respond_info('Park retry %d/%d for %s' % (park_attempt,
+                                              cur_extruder.park_retry_limit, cur_extruder.name))
+                            if park_attempt == cur_extruder.park_retry_limit:
+                                gcode.run_script_from_command('G28 X Y')
+                                toolhead.wait_moves()
+                                if self.switch_accel != toolhead.max_accel:
+                                    toolhead.set_accel(self.switch_accel)
                     # cur_extruder_state = cur_extruder.get_park_detector_status()
                     # if cur_extruder_state is not None and cur_extruder_state['state'] != 'PARKED':
                     #     raise gcmd.error("Abnormal state detection after extruder park, {}: {}".format(cur_extruder.name, cur_extruder_state))
