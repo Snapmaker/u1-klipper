@@ -635,6 +635,9 @@ class ToolHead:
                      'max_accel': self.max_accel,
                      'minimum_cruise_ratio': self.min_cruise_ratio,
                      'square_corner_velocity': self.square_corner_velocity})
+        for name in ('max_z_velocity', 'max_z_accel'):
+            if hasattr(self.kin, name):
+                res[name] = getattr(self.kin, name)
         return res
     def _handle_shutdown(self):
         self.can_pause = False
