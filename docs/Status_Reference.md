@@ -516,6 +516,10 @@ The following information is available in the `toolhead` object
   `square_corner_velocity`: The current printing limits that are in
   effect. This may differ from the config file settings if a
   `SET_VELOCITY_LIMIT` (or `M204`) command alters them at run-time.
+- `max_z_velocity`, `max_z_accel`: The current z axis limits that are
+  in effect, for kinematics that define them. This may differ from the
+  config file settings if a `SET_MAX_Z_VELOCITY` or `SET_MAX_Z_ACCEL`
+  command alters them at run-time.
 - `stalls`: The total number of times (since the last restart) that
   the printer had to be paused because the toolhead moved faster than
   moves could be read from the G-Code input.
